@@ -28,7 +28,9 @@ from helpers import (
 )
 
 
+# =============================================================================
 # CONSTANTS
+# =============================================================================
 PURPLE = "#7c3aed"
 PURPLE_BRIGHT = "#a855f7"
 PURPLE_SOFT = "#c4b5fd"
@@ -45,12 +47,16 @@ CARD_BG_2 = "rgba(28, 18, 55, 0.86)"
 CARD_BORDER = "rgba(168, 85, 247, 0.24)"
 
 
+# =============================================================================
 # BASIC HTML RENDERER
+# =============================================================================
 def render_html(markup: str) -> None:
     st.markdown(markup, unsafe_allow_html=True)
 
 
+# =============================================================================
 # PAGE CSS
+# =============================================================================
 def web_css() -> None:
     st.markdown(
         """
@@ -441,7 +447,9 @@ def web_css() -> None:
     )
 
 
+# =============================================================================
 # DATA CLEANING
+# =============================================================================
 def ensure_web_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -525,9 +533,12 @@ def ensure_web_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# =============================================================================
 # HISTORICAL DATA LOADING AND DATE REFERENCE HELPERS
+# =============================================================================
 @st.cache_data(show_spinner=False)
 def load_historical_web_dataset() -> pd.DataFrame:
+    """Load the stable historical dataset used by the Web Analytics page."""
     paths = [
         Path("data/Cybernova_Final_Intelligence_v2.csv"),
         Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
@@ -545,6 +556,7 @@ def load_historical_web_dataset() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_date_reference_dataset() -> pd.DataFrame:
+    """Load the stable historical file used only for date limits."""
     paths = [
         Path("data/Cybernova_Final_Intelligence_v2.csv"),
         Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
@@ -561,6 +573,7 @@ def load_date_reference_dataset() -> pd.DataFrame:
 
 
 def get_reference_date_limits():
+    """Return the true historical inquiry_date range from the stable CSV."""
     reference_df = load_date_reference_dataset()
 
     if reference_df.empty or "inquiry_date" not in reference_df.columns:
@@ -578,6 +591,7 @@ def get_reference_date_limits():
 
 
 def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+    """Remove accidental live/simulation rows outside the historical range."""
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -592,7 +606,11 @@ def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date)
 
 
 def build_web_analytics_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
-    # combine historical CSV with valid live rows for this page
+    """Build Web Analytics data from historical data plus valid incoming rows.
+
+    The live API may pass current-date rows. Those rows should not replace the
+    historical CyberNova web dataset used for this assessed dashboard.
+    """
     incoming_df = incoming_df.copy() if incoming_df is not None else pd.DataFrame()
     historical_df = load_historical_web_dataset()
 
@@ -640,6 +658,7 @@ def build_web_analytics_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_date_limits(valid_dates: pd.Series):
+    """Return date limits for the filter without forcing a selected range."""
     reference_start, reference_end = get_reference_date_limits()
 
     if reference_start is not None and reference_end is not None:
@@ -652,6 +671,7 @@ def get_date_limits(valid_dates: pd.Series):
 
 
 def normalise_date_range(date_range):
+    """Keep the date filter empty unless the user selects a complete range."""
     if date_range is None:
         return None, None
 
@@ -668,7 +688,9 @@ def normalise_date_range(date_range):
     return None, None
 
 
+# =============================================================================
 # PERIOD HELPERS
+# =============================================================================
 def get_previous_period(start_date, end_date):
     if start_date is None or end_date is None:
         return None, None
@@ -702,7 +724,9 @@ def date_label(start_date, end_date):
     return f"{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}"
 
 
+# =============================================================================
 # KPI HELPERS
+# =============================================================================
 def total_web_activity(df: pd.DataFrame) -> int:
     available_cols = [
         col
@@ -756,7 +780,9 @@ def kpi_card(label, value, delta_html, note, featured=False):
     )
 
 
+# =============================================================================
 # CHART HELPERS
+# =============================================================================
 def apply_chart_layout(fig, height=235):
     fig.update_layout(
         height=height,
@@ -832,7 +858,9 @@ def render_chart(title, subtitle, fig, key, expanded_height=500):
         )
 
 
+# =============================================================================
 # TABLE HELPERS
+# =============================================================================
 def decide_action(row) -> str:
     high_intent = float(row.get("High Intent Hits", 0))
     demo = float(row.get("Demo Requests", 0))
@@ -903,7 +931,9 @@ def render_evidence_table(evidence_table: pd.DataFrame) -> None:
     render_html(table_html)
 
 
+# =============================================================================
 # MAIN PAGE
+# =============================================================================
 def show(df):
     web_css()
 
@@ -923,7 +953,9 @@ def show(df):
         )
         return
 
+    # -------------------------------------------------------------------------
     # Reset filters
+    # -------------------------------------------------------------------------
     if st.session_state.pop("_web_reset_filters", False):
         reset_keys = [
             "web_date_filter",
@@ -936,7 +968,9 @@ def show(df):
         for key in reset_keys:
             st.session_state.pop(key, None)
 
+    # -------------------------------------------------------------------------
     # Top action buttons
+    # -------------------------------------------------------------------------
     nav_left, nav_space, nav_right = st.columns([1.5, 5.0, 1.4])
 
     with nav_left:
@@ -958,7 +992,9 @@ def show(df):
             st.session_state["_web_reset_filters"] = True
             st.rerun()
 
+    # -------------------------------------------------------------------------
     # Title
+    # -------------------------------------------------------------------------
     render_html(
         """
         <div class="web-title">Web Analytics & IIS Logs</div>
@@ -968,7 +1004,9 @@ def show(df):
         """
     )
 
+    # -------------------------------------------------------------------------
     # Filters
+    # -------------------------------------------------------------------------
     render_html('<div class="web-small-label">Filters</div>')
 
     f0, f1, f2, f3, f4 = st.columns([1.25, 1, 1, 1, 1])
@@ -1030,7 +1068,9 @@ def show(df):
             key="web_industry_filter",
         )
 
+    # -------------------------------------------------------------------------
     # Apply filters
+    # -------------------------------------------------------------------------
     base_df = df.copy()
 
     if selected_country != "All":
@@ -1068,8 +1108,9 @@ def show(df):
         st.warning("No web records match the selected filters.")
         return
 
+    # -------------------------------------------------------------------------
     # KPI calculations
-    # check which leads have any website activity - NaT dates are handled inside the mask
+    # -------------------------------------------------------------------------
     web_mask = web_active_mask(filtered_df)
     previous_web_mask = web_active_mask(previous_df) if not previous_df.empty else pd.Series(False, index=previous_df.index)
 
@@ -1099,7 +1140,9 @@ def show(df):
     web_active_rate = safe_rate(web_active_leads, total_leads)
     previous_web_active_rate = safe_rate(previous_web_active_leads, previous_total_leads)
 
+    # -------------------------------------------------------------------------
     # KPI cards
+    # -------------------------------------------------------------------------
     render_html('<div class="web-section-label">Key Web Intelligence Indicators</div>')
 
     k1, k2, k3, k4, k5 = st.columns(5)
@@ -1145,7 +1188,9 @@ def show(df):
             note="Closed revenue linked to visible website activity.",
         )
 
+    # -------------------------------------------------------------------------
     # Prescriptive summary
+    # -------------------------------------------------------------------------
     top_channel = "Unknown"
     top_country = "Unknown"
 
@@ -1207,7 +1252,9 @@ def show(df):
     )
     render_storytelling_box(_web_what, _web_why, _web_next)
 
+    # -------------------------------------------------------------------------
     # Funnel data
+    # -------------------------------------------------------------------------
     try:
         staged_df = add_stage_flags(filtered_df.copy())
     except Exception:
@@ -1232,7 +1279,9 @@ def show(df):
         int(staged_df.loc[web_mask, "has_contract"].sum()),
     ]
 
+    # -------------------------------------------------------------------------
     # Row 1 charts
+    # -------------------------------------------------------------------------
     col1, col2 = st.columns(2)
 
     with col1:
@@ -1306,7 +1355,9 @@ def show(df):
             key="web_channel_intent",
         )
 
+    # -------------------------------------------------------------------------
     # Row 2 charts
+    # -------------------------------------------------------------------------
     col3, col4 = st.columns(2)
 
     with col3:
@@ -1409,7 +1460,9 @@ def show(df):
             key="web_ops_quality",
         )
 
+    # -------------------------------------------------------------------------
     # Row 3: Web revenue by service and channel conversion
+    # -------------------------------------------------------------------------
     col5, col6 = st.columns(2)
 
     with col5:
@@ -1527,7 +1580,9 @@ def show(df):
             key="web_channel_conversion",
         )
 
+    # -------------------------------------------------------------------------
     # Evidence table
+    # -------------------------------------------------------------------------
     render_html(
         """
         <div class="web-chart-heading">

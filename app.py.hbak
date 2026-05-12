@@ -9,7 +9,9 @@ from helpers import load_data
 from fixes import render_export_button, render_storytelling_box
 
 
+# ============================================================
 # PAGE CONFIG
+# ============================================================
 st.set_page_config(
     page_title="CyberNova Intelligence Portal",
     page_icon="🛡️",
@@ -18,17 +20,26 @@ st.set_page_config(
 )
 
 
+# ============================================================
 # HTML RENDER HELPER
+# ============================================================
 def render_html(markup: str):
     st.markdown(dedent(markup).strip(), unsafe_allow_html=True)
 
 
+# ============================================================
 # LIVE API SETTINGS
+# ============================================================
 API_URL = "http://127.0.0.1:5001/live-data"
-LIVE_REFRESH_SECONDS = 6  # 6s felt right - fast enough to look live without hammering the API
+LIVE_REFRESH_SECONDS = 6
 
 
-# hardcoded demo accounts - production version would use a proper database
+# ============================================================
+# DEMO USERS
+# Prototype note:
+# In a real production system, users would be stored in a secure
+# database with hashed passwords and role-based access controls.
+# ============================================================
 USERS = {
     "executive@cybernova.com": {
         "password": "exec123",
@@ -53,7 +64,9 @@ USERS = {
 }
 
 
+# ============================================================
 # SESSION STATE
+# ============================================================
 def initialise_session_state():
     defaults = {
         "logged_in": False,
@@ -81,7 +94,9 @@ def initialise_session_state():
 initialise_session_state()
 
 
+# ============================================================
 # GENERAL CALCULATION HELPERS
+# ============================================================
 def money(value):
     try:
         return f"BWP {float(value):,.0f}"
@@ -124,6 +139,10 @@ def safe_rate(numerator, denominator):
 
 
 def month_delta(df, value_col, date_col="inquiry_date"):
+    """
+    Calculates the latest month value, previous month value, and percentage change.
+    This gives the dashboard a business pulse instead of static KPIs.
+    """
     if df.empty or value_col not in df.columns or date_col not in df.columns:
         return 0.0, 0.0, 0.0
 
@@ -158,7 +177,10 @@ def month_delta(df, value_col, date_col="inquiry_date"):
 
 
 def web_active_mask(df):
-    # returns a boolean mask - True for leads that have any website activity
+    """
+    Identifies leads that have meaningful IIS/web behaviour.
+    This links website activity to sales and marketing outcomes.
+    """
     web_columns = [
         "web_visit_count",
         "total_web_events",
@@ -182,6 +204,10 @@ def web_active_mask(df):
 
 
 def calculate_sales_velocity_days(df):
+    """
+    Measures how fast converted leads move from inquiry to close.
+    This is a more intelligent KPI than just counting revenue.
+    """
     if "inquiry_date" not in df.columns or "close_date" not in df.columns:
         return None
 
@@ -210,7 +236,9 @@ def calculate_sales_velocity_days(df):
     return float(temp["days_to_close"].mean())
 
 
+# ============================================================
 # LIVE DATA CLEANING
+# ============================================================
 def clean_live_dataframe(live_df: pd.DataFrame) -> pd.DataFrame:
     live_df = live_df.copy()
 
@@ -315,7 +343,9 @@ def clean_live_dataframe(live_df: pd.DataFrame) -> pd.DataFrame:
     return live_df
 
 
+# ============================================================
 # LIVE API POLLING
+# ============================================================
 def get_live_data() -> bool:
     try:
         response = requests.get(API_URL, timeout=4)
@@ -404,7 +434,9 @@ def get_dashboard_data() -> pd.DataFrame:
     return df
 
 
+# ============================================================
 # LOGIN CSS
+# ============================================================
 render_html("""
 <style>
     #MainMenu, footer, header {
@@ -519,7 +551,9 @@ render_html("""
 """)
 
 
+# ============================================================
 # DASHBOARD CSS
+# ============================================================
 def dashboard_css():
     render_html("""
     <style>
@@ -769,13 +803,26 @@ def dashboard_css():
     """)
 
 
+# ============================================================
 # PAGE NAVIGATION HELPERS
+# ============================================================
 def switch_page(page_name):
     st.session_state.active_page = page_name
 
 
 def get_allowed_pages():
-    # defines which pages each role is allowed to see
+    """
+    Role-based access structure.
+
+    Executive/Admin:
+        Access everything.
+
+    Sales:
+        Overview + Sales + Web Analytics.
+
+    Marketing:
+        Overview + Marketing + Web Analytics.
+    """
     pages_by_role = {
         "Admin": ["Overview", "Executive", "Sales", "Marketing", "Web Analytics"],
         "Executive": ["Overview", "Executive", "Sales", "Marketing", "Web Analytics"],
@@ -815,7 +862,9 @@ def clean_overview_data(df):
     return df
 
 
+# ============================================================
 # LOGIN / LOGOUT
+# ============================================================
 def login_user(email, password):
     email = email.strip().lower()
 
@@ -857,7 +906,9 @@ def logout_user():
     st.rerun()
 
 
+# ============================================================
 # OVERVIEW PAGE
+# ============================================================
 def show_overview(df):
     df = clean_overview_data(df)
     allowed_pages = get_allowed_pages()
@@ -1028,7 +1079,9 @@ def show_overview(df):
     return
 
 
+# ============================================================
 # PAGE RENDERING
+# ============================================================
 def render_external_page(module_name, df, friendly_name):
     try:
         page_module = importlib.import_module(module_name)
@@ -1049,7 +1102,9 @@ def render_external_page(module_name, df, friendly_name):
         st.exception(error)
 
 
+# ============================================================
 # LOGGED-IN DASHBOARD
+# ============================================================
 if st.session_state.logged_in:
     dashboard_css()
 
@@ -1181,7 +1236,9 @@ if st.session_state.logged_in:
     st.stop()
 
 
+# ============================================================
 # LOGIN PAGE
+# ============================================================
 render_html("""
 <div class="brand-title">CyberNova</div>
 <div class="brand-subtitle">AI-Powered Web-to-Sales Intelligence Portal</div>
@@ -1217,9 +1274,11 @@ render_html("""
 
 render_html("""
 <div class="prototype-note">
-    <b>Note:</b>
-    These are demo credentials only. A production version would use a proper
-    database with hashed passwords and role-based access control.
+    <b>Prototype note:</b>
+    These are demo credentials for testing role-based access.
+    In a production system, user accounts would be stored in a secure database,
+    passwords would be hashed, and access permissions would be managed through
+    proper role-based access control.
 </div>
 """)
 

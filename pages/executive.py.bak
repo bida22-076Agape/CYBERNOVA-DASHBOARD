@@ -7,10 +7,11 @@ from textwrap import dedent
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from fixes import render_export_button, render_next_quarter_forecast, render_storytelling_box
 
 
+# ============================================================================
 # COLOUR TOKENS
+# ============================================================================
 PURPLE = "#a855f7"
 PURPLE_DEEP = "#6d28d9"
 LILAC = "#c4b5fd"
@@ -26,7 +27,9 @@ CARD_BG = "rgba(14,13,30,0.96)"
 CARD_BORDER = "rgba(148,113,255,0.22)"
 
 
+# ============================================================================
 # CHART CONFIG
+# ============================================================================
 COMPACT_CHART_CONFIG = {
     "displayModeBar": False,
     "displaylogo": False,
@@ -49,7 +52,9 @@ EXPANDED_CHART_CONFIG = {
 }
 
 
+# ============================================================================
 # BASIC HELPERS
+# ============================================================================
 def render_html(markup: str) -> None:
     """Render small HTML fragments safely in Streamlit."""
     st.markdown(dedent(markup).strip(), unsafe_allow_html=True)
@@ -80,6 +85,7 @@ def safe_rate(numerator, denominator):
 
 
 def normalise_stage(stage):
+    """Map messy lead-stage names into clean dashboard categories."""
     stage = str(stage).strip().lower()
 
     if "contract" in stage or "won" in stage or "closed" in stage:
@@ -93,6 +99,7 @@ def normalise_stage(stage):
 
 @st.cache_data(show_spinner=False)
 def load_historical_dataset() -> pd.DataFrame:
+    """Load the fuller historical dataset so executive charts show full trends."""
     paths = [
         Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
         Path("data/Cybernova_Final_Intelligence_v2.csv"),
@@ -110,6 +117,12 @@ def load_historical_dataset() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_date_reference_dataset() -> pd.DataFrame:
+    """Load the stable historical file used only for date limits.
+
+    The live API can create current-date rows. This reference file keeps the
+    executive page anchored to the historical business period unless the
+    project data itself is intentionally changed.
+    """
     paths = [
         Path("data/Cybernova_Final_Intelligence_v2.csv"),
         Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
@@ -141,6 +154,7 @@ def get_reference_date_limits():
 
 
 def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+    """Remove accidental live-simulation rows outside the historical window."""
     if df is None or df.empty or start_date is None or end_date is None:
         return df.copy() if df is not None else pd.DataFrame()
 
@@ -155,7 +169,7 @@ def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date)
 
 
 def clean_executive_data(df: pd.DataFrame) -> pd.DataFrame:
-    # standardise column types and fill missing values
+    """Standardise columns, data types, and missing values for the executive page."""
     df = df.copy()
 
     if "service_type" not in df.columns and "service" in df.columns:
@@ -232,7 +246,12 @@ def clean_executive_data(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_executive_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
-    # merges historical CSV with live rows, filters anything outside the date window
+    """Combine data, but block accidental 2026/current-date live rows.
+
+    The executive dashboard is assessed on the historical CyberNova dataset.
+    Live simulation rows can carry the computer's current date, so this keeps
+    the page aligned to the real historical inquiry_date range from the CSV.
+    """
     incoming_df = incoming_df.copy() if incoming_df is not None else pd.DataFrame()
     historical_df = load_historical_dataset()
 
@@ -271,8 +290,11 @@ def build_executive_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
     return combined
 
 
+# ============================================================================
 # DATE HELPERS
+# ============================================================================
 def get_previous_period(start_date, end_date):
+    """Return the equivalent previous-period window for comparison."""
     if start_date is None or end_date is None:
         return None, None
 
@@ -284,6 +306,7 @@ def get_previous_period(start_date, end_date):
 
 
 def date_label(start_date, end_date):
+    """Readable label for selected date ranges."""
     if start_date is None or end_date is None:
         return "Full available timeline"
 
@@ -291,6 +314,7 @@ def date_label(start_date, end_date):
 
 
 def filter_date(df, start_date, end_date, date_col="inquiry_date"):
+    """Filter data only after the user has selected both start and end dates."""
     if start_date is None or end_date is None or date_col not in df.columns:
         return df.copy()
 
@@ -299,6 +323,7 @@ def filter_date(df, start_date, end_date, date_col="inquiry_date"):
 
 
 def get_date_limits(valid_dates: pd.Series):
+    """Return min/max dates for the filter without forcing a selected range."""
     reference_start, reference_end = get_reference_date_limits()
 
     if reference_start is not None and reference_end is not None:
@@ -311,6 +336,7 @@ def get_date_limits(valid_dates: pd.Series):
 
 
 def normalise_date_range(date_range):
+    """Keep the date filter empty unless a complete range has been selected."""
     if date_range is None:
         return None, None
 
@@ -327,8 +353,11 @@ def normalise_date_range(date_range):
     return None, None
 
 
+# ============================================================================
 # KPI AND RECOMMENDATION HELPERS
+# ============================================================================
 def web_active_mask(df):
+    """Identify records that show IIS/web activity."""
     mask = pd.Series(False, index=df.index)
 
     web_cols = [
@@ -358,6 +387,7 @@ def get_recommendation_values(
     target_achievement,
     web_influenced_revenue,
 ):
+    """Create dynamic values for the executive recommendation panel."""
     best_country = "the strongest market"
     review_country = "a weaker conversion market"
     protect_country = "the current core market"
@@ -428,6 +458,7 @@ def get_recommendation_values(
 
 
 def render_recommendations(values):
+    """Render recommendations as one safe HTML line to avoid Markdown code-block issues."""
     growth_pct = values["growth_pct"]
     growth_sign = "+" if growth_pct >= 0 else "-"
 
@@ -465,7 +496,9 @@ def render_recommendations(values):
     st.markdown(rec_html, unsafe_allow_html=True)
 
 
+# ============================================================================
 # CSS
+# ============================================================================
 def executive_css():
     css = f"""
     <style>
@@ -687,7 +720,9 @@ def executive_css():
     render_html(css)
 
 
+# ============================================================================
 # CHART THEME
+# ============================================================================
 def apply_dark_chart_layout(fig, height=240):
     fig.update_layout(
         height=height,
@@ -731,7 +766,9 @@ def render_chart(fig, key, expanded_key, expanded_height=520):
         )
 
 
+# ============================================================================
 # MAIN PAGE
+# ============================================================================
 def show(filtered_df: pd.DataFrame) -> None:
     executive_css()
 
@@ -746,7 +783,6 @@ def show(filtered_df: pd.DataFrame) -> None:
         for key in ("exec_date_range", "exec_country", "exec_service", "exec_industry"):
             st.session_state.pop(key, None)
 
-    # load and clean - also filters out any live rows with wrong dates
     if filtered_df is None or filtered_df.empty:
         st.warning("No executive data is available.")
         return
@@ -910,27 +946,6 @@ def show(filtered_df: pd.DataFrame) -> None:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # CR12 — Data Storytelling Box
-    _exec_what = (
-        f"CyberNova has generated {compact_money(total_revenue)} in actual revenue — "
-        f"{target_achievement:.1f}% of the revenue target — with a conversion rate of "
-        f"{conversion_rate:.1f}% across {total_leads:,} leads."
-    )
-    _exec_why = (
-        f"Actual revenue is {'ahead of' if revenue_vs_forecast >= 100 else 'below'} "
-        f"forecast at {revenue_vs_forecast:.1f}%. "
-        f"Web-influenced revenue accounts for {compact_money(web_influenced_revenue)}, "
-        f"reflecting the impact of digital channels on closed deals."
-    )
-    _exec_next = (
-        "Protect the strongest markets and scale the top service line."
-        if target_achievement >= 100
-        else
-        "Close the revenue gap by accelerating high-probability pipeline "
-        "and improving follow-up speed on web-active leads."
-    )
-    render_storytelling_box(_exec_what, _exec_why, _exec_next)
-
     # Charts
     chart_col1, chart_col2 = st.columns([3, 2])
 
@@ -1015,9 +1030,6 @@ def show(filtered_df: pd.DataFrame) -> None:
         else:
             st.info("Service data not available.")
 
-    # CR03 — Next-Quarter Revenue Forecast
-    render_next_quarter_forecast(df)
-
     # Strategic Recommendations
     render_html('<div class="exec-section-heading">Strategic Recommendations</div>')
 
@@ -1031,9 +1043,6 @@ def show(filtered_df: pd.DataFrame) -> None:
     )
 
     render_recommendations(values)
-
-    # CR11 — Export Report
-    render_export_button(df, "cybernova_executive_report")
 
     # Footer
     render_html("""

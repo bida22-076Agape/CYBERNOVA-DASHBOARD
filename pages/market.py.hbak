@@ -9,7 +9,9 @@ from datetime import timedelta
 from textwrap import dedent
 
 
+# ============================================================
 # COLOUR TOKENS - MARKETING PURPLE THEME
+# ============================================================
 PURPLE = "#7c3aed"
 PURPLE_DEEP = "#5b05f5"
 PURPLE_DARK = "#25006e"
@@ -26,7 +28,9 @@ TEXT_MUTED = "#b5a7e8"
 CARD_BORDER = "rgba(216, 180, 254, 0.20)"
 
 
+# ============================================================
 # BASIC HELPERS
+# ============================================================
 def render_html(markup: str) -> None:
     st.markdown(dedent(markup).strip(), unsafe_allow_html=True)
 
@@ -72,7 +76,9 @@ def go_to_overview():
     st.rerun()
 
 
+# ============================================================
 # DATA CLEANING
+# ============================================================
 def clean_marketing_data(df):
     df = df.copy()
 
@@ -164,9 +170,12 @@ def clean_marketing_data(df):
     return df
 
 
+# ============================================================
 # HISTORICAL DATA LOADING AND DATE REFERENCE HELPERS
+# ============================================================
 @st.cache_data(show_spinner=False)
 def load_historical_marketing_dataset() -> pd.DataFrame:
+    """Load the stable historical marketing dataset used by the Marketing page."""
     paths = [
         Path("data/Cybernova_Final_Intelligence_v2.csv"),
         Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
@@ -184,6 +193,7 @@ def load_historical_marketing_dataset() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def load_date_reference_dataset() -> pd.DataFrame:
+    """Load the stable historical file used only for date limits."""
     paths = [
         Path("data/Cybernova_Final_Intelligence_v2.csv"),
         Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
@@ -200,6 +210,7 @@ def load_date_reference_dataset() -> pd.DataFrame:
 
 
 def get_reference_date_limits():
+    """Return the true historical inquiry_date range from the stable CSV."""
     reference_df = load_date_reference_dataset()
 
     if reference_df.empty or "inquiry_date" not in reference_df.columns:
@@ -214,6 +225,7 @@ def get_reference_date_limits():
 
 
 def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+    """Remove accidental live/simulation rows outside the historical range."""
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -228,7 +240,11 @@ def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date)
 
 
 def build_marketing_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
-    # combine historical CSV with valid live rows
+    """Build Marketing data from historical data plus valid incoming rows.
+
+    The live API may pass 2026/current-date records. Those should not replace
+    the historical CyberNova marketing dataset used for this assessed dashboard.
+    """
     incoming_df = incoming_df.copy() if incoming_df is not None else pd.DataFrame()
     historical_df = load_historical_marketing_dataset()
 
@@ -270,6 +286,7 @@ def build_marketing_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_date_limits(valid_dates: pd.Series):
+    """Return date limits for the filter without forcing a selected range."""
     reference_start, reference_end = get_reference_date_limits()
 
     if reference_start is not None and reference_end is not None:
@@ -282,6 +299,7 @@ def get_date_limits(valid_dates: pd.Series):
 
 
 def normalise_date_range(date_range):
+    """Keep the date filter empty unless the user selects a complete range."""
     if date_range is None:
         return None, None
 
@@ -298,7 +316,9 @@ def normalise_date_range(date_range):
     return None, None
 
 
+# ============================================================
 # PERIOD / TIMELINE HELPERS
+# ============================================================
 def get_previous_period(start_date, end_date):
     if start_date is None or end_date is None:
         return None, None
@@ -329,7 +349,9 @@ def filter_date(df, start_date, end_date, date_col="inquiry_date"):
     ].copy()
 
 
+# ============================================================
 # MARKETING KPI HELPERS
+# ============================================================
 def web_active_mask(df):
     mask = pd.Series(False, index=df.index)
 
@@ -436,7 +458,9 @@ def delta_badge(
     )
 
 
+# ============================================================
 # CSS - MARKETING DASHBOARD
+# ============================================================
 def marketing_css():
     render_html(f"""
     <style>
@@ -770,7 +794,9 @@ def marketing_css():
     """)
 
 
+# ============================================================
 # PLOTLY THEME
+# ============================================================
 def apply_dark_chart_layout(fig, height=250):
     fig.update_layout(
         height=height,
@@ -813,8 +839,11 @@ def apply_dark_chart_layout(fig, height=250):
     return fig
 
 
+# ============================================================
 # MARKETING EVIDENCE TABLE HELPER
+# ============================================================
 def render_marketing_evidence_table(evidence_table: pd.DataFrame) -> None:
+    """Render the bottom evidence table using the same dark style as Web Analytics."""
     if evidence_table.empty:
         st.info("No marketing evidence table available.")
         return
@@ -862,7 +891,9 @@ def render_marketing_evidence_table(evidence_table: pd.DataFrame) -> None:
     render_html(table_html)
 
 
+# ============================================================
 # MAIN MARKETING PAGE
+# ============================================================
 def show(df):
     marketing_css()
 
@@ -1522,8 +1553,7 @@ def show(df):
 
         matrix_df = market_df.copy()
 
-        # opportunity score - weights conversion probability, lead score and web signals
-    matrix_df["opportunity_score"] = (
+        matrix_df["opportunity_score"] = (
             matrix_df["conversion_probability"] * 45
             + matrix_df["lead_score"] * 0.35
             + matrix_df["high_intent_hits"] * 4

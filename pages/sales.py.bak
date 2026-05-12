@@ -1,5 +1,4 @@
 import streamlit as st
-from fixes import render_export_button, render_storytelling_box
 import pandas as pd
 import plotly.graph_objects as go
 import html
@@ -8,7 +7,9 @@ from datetime import timedelta
 from textwrap import dedent
 
 
+# ============================================================
 # COLOUR TOKENS - SALES PURPLE THEME
+# ============================================================
 PURPLE = "#7c3aed"
 PURPLE_DEEP = "#3b008f"
 PURPLE_BORDER = "rgba(196, 181, 253, 0.22)"
@@ -23,7 +24,9 @@ TEXT_MUTED = "#a1a1aa"
 CARD_BG = "rgba(14, 13, 30, 0.96)"
 
 
+# ============================================================
 # BASIC HELPERS
+# ============================================================
 def render_html(markup: str) -> None:
     st.markdown(dedent(markup).strip(), unsafe_allow_html=True)
 
@@ -71,6 +74,7 @@ def go_to_overview():
 
 
 def render_dark_sales_table(df: pd.DataFrame) -> None:
+    """Render a dark purple HTML table instead of Streamlit's white dataframe."""
     if df is None or df.empty:
         st.info("No high-priority open leads match the current filters.")
         return
@@ -131,7 +135,9 @@ def render_dark_sales_table(df: pd.DataFrame) -> None:
     """)
 
 
+# ============================================================
 # DATA CLEANING
+# ============================================================
 def clean_sales_data(df):
     df = df.copy()
 
@@ -229,9 +235,17 @@ def clean_sales_data(df):
     return df
 
 
+# ============================================================
 # HISTORICAL DATA LOADING
+# ============================================================
 @st.cache_data(show_spinner=False)
 def load_historical_sales_dataset() -> pd.DataFrame:
+    """Load the stable historical sales dataset used by the Sales page.
+
+    This is important because the live dashboard feed can send rows dated with
+    the computer's current date. The Sales page must still show the proper
+    historical CyberNova dataset instead of going blank.
+    """
     paths = [
         Path("data/Cybernova_Final_Intelligence_v2.csv"),
         Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
@@ -247,7 +261,9 @@ def load_historical_sales_dataset() -> pd.DataFrame:
     return pd.DataFrame()
 
 
+# ============================================================
 # STABLE DATE REFERENCE HELPERS
+# ============================================================
 @st.cache_data(show_spinner=False)
 def load_date_reference_dataset() -> pd.DataFrame:
     """
@@ -290,6 +306,7 @@ def get_reference_date_limits():
 
 
 def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+    """Remove accidental live/simulation rows outside the historical range."""
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -304,7 +321,12 @@ def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date)
 
 
 def build_sales_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
-    # pull historical CSV and any valid live rows together into one dataframe
+    """Build the Sales page dataset from historical data plus valid incoming rows.
+
+    The app may pass live records dated 2026 because the simulation uses the
+    current computer date. Those records are useful for proving live refresh,
+    but they should not replace the historical project dataset on this page.
+    """
     incoming_df = incoming_df.copy() if incoming_df is not None else pd.DataFrame()
     historical_df = load_historical_sales_dataset()
 
@@ -346,6 +368,7 @@ def build_sales_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_date_limits(valid_dates: pd.Series):
+    """Return date limits for the filter without forcing a selected range."""
     reference_start, reference_end = get_reference_date_limits()
 
     if reference_start is not None and reference_end is not None:
@@ -358,6 +381,9 @@ def get_date_limits(valid_dates: pd.Series):
 
 
 def normalise_date_range(date_range):
+    """
+    Keep the date filter empty unless the user has selected a complete range.
+    """
     if date_range is None:
         return None, None
 
@@ -374,7 +400,9 @@ def normalise_date_range(date_range):
     return None, None
 
 
+# ============================================================
 # PERIOD / TIMELINE HELPERS
+# ============================================================
 def get_previous_period(start_date, end_date):
     if start_date is None or end_date is None:
         return None, None
@@ -405,7 +433,9 @@ def filter_date(df, start_date, end_date, date_col="inquiry_date"):
     ].copy()
 
 
+# ============================================================
 # KPI CALCULATION HELPERS
+# ============================================================
 def weighted_pipeline(df):
     if df.empty:
         return 0.0
@@ -455,6 +485,13 @@ def delta_badge(
     mode="percent",
     context="change"
 ):
+    """
+    Shows whether the KPI increased or decreased compared to the previous period.
+
+    Timeline logic:
+    - Current period = selected date range.
+    - Previous period = same number of days immediately before the selected range.
+    """
     try:
         current = float(current)
         previous = float(previous)
@@ -497,7 +534,9 @@ def delta_badge(
     )
 
 
+# ============================================================
 # CSS - SALES DASHBOARD
+# ============================================================
 def sales_css():
     render_html(f"""
     <style>
@@ -792,7 +831,9 @@ def sales_css():
     """)
 
 
+# ============================================================
 # PLOTLY THEME
+# ============================================================
 def apply_dark_chart_layout(fig, height=210):
     fig.update_layout(
         height=height,
@@ -835,7 +876,9 @@ def apply_dark_chart_layout(fig, height=210):
     return fig
 
 
+# ============================================================
 # MAIN SALES PAGE
+# ============================================================
 def show(df):
     sales_css()
 
@@ -1141,23 +1184,6 @@ def show(df):
         """)
 
     st.markdown("<div style=\"height:4px\"></div>", unsafe_allow_html=True)
-
-    # CR12 — Data Storytelling Box
-    _sales_what = (
-        f"The pipeline holds {total_leads:,} leads with {won_deals:,} converted — "
-        f"a {conversion_rate:.1f}% conversion rate. "
-        f"Actual revenue stands at {compact_money(total_revenue)}."
-    )
-    _sales_why = (
-        f"The weighted pipeline value is {compact_money(active_pipeline)}, meaning "
-        f"significant forecast value remains unconverted. "
-        f"Sales velocity averages {velocity:.0f} days from inquiry to close."
-    )
-    _sales_next = (
-        f"Focus on the {web_hot_leads:,} web hot leads showing demo requests or "
-        "high-intent signals — these are the most likely to convert in the next cycle."
-    )
-    render_storytelling_box(_sales_what, _sales_why, _sales_next)
 
     # ============================================================
     # CHART ROW 1
@@ -1468,7 +1494,6 @@ def show(df):
         st.info("No high-priority open leads match the current filters.")
 
     else:
-        # capped at 8 rows - any more and the table gets unwieldy
         display = likely_to_convert.head(8).copy()
 
         display["Suggested Action"] = display.apply(
@@ -1538,6 +1563,3 @@ def show(df):
         render_dark_sales_table(display)
 
     render_html("</div>")
-
-    # CR11 — Export Report
-    render_export_button(sales_df, "cybernova_sales_report")

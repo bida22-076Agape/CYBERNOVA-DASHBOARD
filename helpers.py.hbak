@@ -164,6 +164,9 @@ def safe_rate(numerator, denominator):
 
 
 def month_delta(df, value_col, date_col="inquiry_date"):
+    """
+    Returns current month value, previous month value, and % change.
+    """
     if df.empty or value_col not in df.columns or date_col not in df.columns:
         return 0, 0, 0
 
@@ -197,6 +200,9 @@ def month_delta(df, value_col, date_col="inquiry_date"):
 
 
 def web_active_mask(df):
+    """
+    Identifies leads with any IIS/web behaviour.
+    """
     web_columns = [
         "web_visit_count",
         "total_web_events",
@@ -220,6 +226,9 @@ def web_active_mask(df):
 
 
 def add_stage_flags(df):
+    """
+    Creates clean funnel flags for Inquiry → Demo → Proposal → Contract.
+    """
     df = df.copy()
 
     if "current_stage" in df.columns:
@@ -248,8 +257,10 @@ def add_stage_flags(df):
     return df
 
 
-# decides what the sales rep should do next based on lead signals
 def suggested_action(row):
+    """
+    Prescriptive action logic for priority leads.
+    """
     lead_score = row.get("lead_score", 0)
     probability = row.get("conversion_probability", 0)
     demo_requests = row.get("demo_request_count", 0)
