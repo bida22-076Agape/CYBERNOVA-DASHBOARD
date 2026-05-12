@@ -1,0 +1,1052 @@
+# pages/executive.py
+
+from pathlib import Path
+from datetime import timedelta
+from textwrap import dedent
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+
+# ============================================================================
+# COLOUR TOKENS
+# ============================================================================
+PURPLE = "#a855f7"
+PURPLE_DEEP = "#6d28d9"
+LILAC = "#c4b5fd"
+GREEN = "#22c55e"
+RED = "#ef4444"
+BLUE = "#3b82f6"
+ORANGE = "#f59e0b"
+
+TEXT_LIGHT = "#f8fafc"
+TEXT_MUTED = "#94a3b8"
+
+CARD_BG = "rgba(14,13,30,0.96)"
+CARD_BORDER = "rgba(148,113,255,0.22)"
+
+
+# ============================================================================
+# CHART CONFIG
+# ============================================================================
+COMPACT_CHART_CONFIG = {
+    "displayModeBar": False,
+    "displaylogo": False,
+    "responsive": True,
+}
+
+EXPANDED_CHART_CONFIG = {
+    "displayModeBar": True,
+    "displaylogo": False,
+    "scrollZoom": True,
+    "responsive": True,
+    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+    "toImageButtonOptions": {
+        "format": "png",
+        "filename": "cybernova_executive_chart",
+        "height": 720,
+        "width": 1280,
+        "scale": 2,
+    },
+}
+
+
+# ============================================================================
+# BASIC HELPERS
+# ============================================================================
+def render_html(markup: str) -> None:
+    """Render small HTML fragments safely in Streamlit."""
+    st.markdown(dedent(markup).strip(), unsafe_allow_html=True)
+
+
+def compact_money(value):
+    """Format revenue values into compact BWP labels."""
+    try:
+        value = float(value)
+        if abs(value) >= 1_000_000:
+            return f"BWP {value / 1_000_000:.1f}M"
+        if abs(value) >= 1_000:
+            return f"BWP {value / 1_000:.1f}K"
+        return f"BWP {value:,.0f}"
+    except Exception:
+        return "BWP 0"
+
+
+def safe_rate(numerator, denominator):
+    """Return percentage safely where denominator may be zero."""
+    try:
+        denominator = float(denominator)
+        if denominator == 0:
+            return 0.0
+        return float(numerator) / denominator * 100
+    except Exception:
+        return 0.0
+
+
+def normalise_stage(stage):
+    """Map messy lead-stage names into clean dashboard categories."""
+    stage = str(stage).strip().lower()
+
+    if "contract" in stage or "won" in stage or "closed" in stage:
+        return "Contract Confirmed"
+    if "proposal" in stage:
+        return "Proposal Sent"
+    if "demo" in stage:
+        return "Demo Requested"
+    return "Inquiry"
+
+
+@st.cache_data(show_spinner=False)
+def load_historical_dataset() -> pd.DataFrame:
+    """Load the fuller historical dataset so executive charts show full trends."""
+    paths = [
+        Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
+        Path("data/Cybernova_Final_Intelligence_v2.csv"),
+    ]
+
+    for path in paths:
+        if path.exists():
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                continue
+
+    return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def load_date_reference_dataset() -> pd.DataFrame:
+    """Load the stable historical file used only for date limits.
+
+    The live API can create current-date rows. This reference file keeps the
+    executive page anchored to the historical business period unless the
+    project data itself is intentionally changed.
+    """
+    paths = [
+        Path("data/Cybernova_Final_Intelligence_v2.csv"),
+        Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
+    ]
+
+    for path in paths:
+        if path.exists():
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                continue
+
+    return pd.DataFrame()
+
+
+def get_reference_date_limits():
+    """Return the true historical inquiry-date limits from the stable CSV."""
+    reference_df = load_date_reference_dataset()
+
+    if reference_df.empty or "inquiry_date" not in reference_df.columns:
+        return None, None
+
+    reference_dates = pd.to_datetime(reference_df["inquiry_date"], errors="coerce").dropna()
+
+    if reference_dates.empty:
+        return None, None
+
+    return reference_dates.min().date(), reference_dates.max().date()
+
+
+def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+    """Remove accidental live-simulation rows outside the historical window."""
+    if df is None or df.empty or start_date is None or end_date is None:
+        return df.copy() if df is not None else pd.DataFrame()
+
+    if "inquiry_date" not in df.columns:
+        return df.copy()
+
+    cleaned = df.copy()
+    dates = pd.to_datetime(cleaned["inquiry_date"], errors="coerce")
+    keep_mask = dates.isna() | ((dates.dt.date >= start_date) & (dates.dt.date <= end_date))
+
+    return cleaned.loc[keep_mask].copy()
+
+
+def clean_executive_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardise columns, data types, and missing values for the executive page."""
+    df = df.copy()
+
+    if "service_type" not in df.columns and "service" in df.columns:
+        df["service_type"] = df["service"]
+    if "service" not in df.columns and "service_type" in df.columns:
+        df["service"] = df["service_type"]
+
+    text_defaults = {
+        "client_id": "Unknown",
+        "country": "Unknown",
+        "industry": "Unknown",
+        "service_type": "CyberNova Service",
+        "service": "CyberNova Service",
+        "current_stage": "Inquiry",
+        "marketing_channel": "Unknown",
+    }
+
+    for col, default in text_defaults.items():
+        if col not in df.columns:
+            df[col] = default
+        df[col] = df[col].fillna(default).astype(str)
+
+    numeric_cols = [
+        "actual_revenue",
+        "forecast_revenue",
+        "target_revenue",
+        "converted",
+        "lead_score",
+        "conversion_probability",
+        "web_visit_count",
+        "total_web_requests",
+        "total_web_events",
+        "unique_sessions",
+        "demo_request_count",
+        "ai_assistant_request_count",
+        "promotional_event_count",
+        "contract_confirmation_count",
+        "proposal_download_count",
+        "high_intent_hits",
+        "web_error_count",
+        "avg_response_time_ms",
+        "revenue_gap",
+    ]
+
+    for col in numeric_cols:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    date_cols = [
+        "inquiry_date",
+        "close_date",
+        "demo_date",
+        "proposal_date",
+        "first_web_event",
+        "last_web_event",
+    ]
+
+    for col in date_cols:
+        if col not in df.columns:
+            df[col] = pd.NaT
+        df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    if df["conversion_probability"].max() > 1:
+        df["conversion_probability"] = df["conversion_probability"] / 100
+
+    if df["conversion_probability"].sum() == 0 and "lead_score" in df.columns:
+        df["conversion_probability"] = (df["lead_score"] / 100).clip(0, 1)
+
+    df["converted"] = (df["converted"] > 0).astype(int)
+    df["stage_clean"] = df["current_stage"].apply(normalise_stage)
+
+    return df
+
+
+def build_executive_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
+    """Combine data, but block accidental 2026/current-date live rows.
+
+    The executive dashboard is assessed on the historical CyberNova dataset.
+    Live simulation rows can carry the computer's current date, so this keeps
+    the page aligned to the real historical inquiry_date range from the CSV.
+    """
+    incoming_df = incoming_df.copy() if incoming_df is not None else pd.DataFrame()
+    historical_df = load_historical_dataset()
+
+    reference_start, reference_end = get_reference_date_limits()
+
+    historical_df = keep_records_inside_reference_window(
+        historical_df,
+        reference_start,
+        reference_end,
+    )
+
+    incoming_df = keep_records_inside_reference_window(
+        incoming_df,
+        reference_start,
+        reference_end,
+    )
+
+    frames = []
+    if not historical_df.empty:
+        frames.append(historical_df)
+    if not incoming_df.empty:
+        frames.append(incoming_df)
+
+    if not frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    combined = clean_executive_data(combined)
+
+    if "client_id" in combined.columns:
+        combined["_sort_date"] = combined["last_web_event"].fillna(combined["inquiry_date"])
+        combined = combined.sort_values("_sort_date")
+        combined = combined.drop_duplicates(subset=["client_id"], keep="last")
+        combined = combined.drop(columns=["_sort_date"], errors="ignore")
+
+    return combined
+
+
+# ============================================================================
+# DATE HELPERS
+# ============================================================================
+def get_previous_period(start_date, end_date):
+    """Return the equivalent previous-period window for comparison."""
+    if start_date is None or end_date is None:
+        return None, None
+
+    number_of_days = (end_date - start_date).days + 1
+    previous_end = start_date - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=number_of_days - 1)
+
+    return previous_start, previous_end
+
+
+def date_label(start_date, end_date):
+    """Readable label for selected date ranges."""
+    if start_date is None or end_date is None:
+        return "Full available timeline"
+
+    return f"{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}"
+
+
+def filter_date(df, start_date, end_date, date_col="inquiry_date"):
+    """Filter data only after the user has selected both start and end dates."""
+    if start_date is None or end_date is None or date_col not in df.columns:
+        return df.copy()
+
+    dates = pd.to_datetime(df[date_col], errors="coerce")
+    return df[(dates.dt.date >= start_date) & (dates.dt.date <= end_date)].copy()
+
+
+def get_date_limits(valid_dates: pd.Series):
+    """Return min/max dates for the filter without forcing a selected range."""
+    reference_start, reference_end = get_reference_date_limits()
+
+    if reference_start is not None and reference_end is not None:
+        return reference_start, reference_end
+
+    if valid_dates.empty:
+        return None, None
+
+    return valid_dates.min().date(), valid_dates.max().date()
+
+
+def normalise_date_range(date_range):
+    """Keep the date filter empty unless a complete range has been selected."""
+    if date_range is None:
+        return None, None
+
+    if isinstance(date_range, (tuple, list)):
+        if len(date_range) == 2 and date_range[0] is not None and date_range[1] is not None:
+            start_date = date_range[0]
+            end_date = date_range[1]
+
+            if start_date > end_date:
+                start_date, end_date = end_date, start_date
+
+            return start_date, end_date
+
+    return None, None
+
+
+# ============================================================================
+# KPI AND RECOMMENDATION HELPERS
+# ============================================================================
+def web_active_mask(df):
+    """Identify records that show IIS/web activity."""
+    mask = pd.Series(False, index=df.index)
+
+    web_cols = [
+        "web_visit_count",
+        "total_web_requests",
+        "total_web_events",
+        "unique_sessions",
+        "high_intent_hits",
+        "demo_request_count",
+        "ai_assistant_request_count",
+        "contract_confirmation_count",
+        "proposal_download_count",
+    ]
+
+    for col in web_cols:
+        if col in df.columns:
+            mask = mask | (pd.to_numeric(df[col], errors="coerce").fillna(0) > 0)
+
+    return mask
+
+
+def get_recommendation_values(
+    df,
+    total_revenue,
+    forecast_revenue,
+    revenue_vs_forecast,
+    target_achievement,
+    web_influenced_revenue,
+):
+    """Create dynamic values for the executive recommendation panel."""
+    best_country = "the strongest market"
+    review_country = "a weaker conversion market"
+    protect_country = "the current core market"
+    best_service = "the strongest service"
+
+    if not df.empty:
+        country_summary = df.groupby("country", as_index=False).agg(
+            revenue=("actual_revenue", "sum"),
+            leads=("client_id", "count"),
+            converted=("converted", "sum"),
+        )
+
+        country_summary["conversion_rate"] = country_summary.apply(
+            lambda row: safe_rate(row["converted"], row["leads"]),
+            axis=1,
+        )
+
+        if not country_summary.empty:
+            best_country = country_summary.sort_values("revenue", ascending=False).iloc[0]["country"]
+            review_country = country_summary.sort_values("conversion_rate", ascending=True).iloc[0]["country"]
+            protect_country = country_summary.sort_values("converted", ascending=False).iloc[0]["country"]
+
+        service_summary = (
+            df.groupby("service_type", as_index=False)
+            .agg(revenue=("actual_revenue", "sum"))
+            .sort_values("revenue", ascending=False)
+        )
+
+        if not service_summary.empty:
+            best_service = service_summary.iloc[0]["service_type"]
+
+    if forecast_revenue > 0 and total_revenue > 0:
+        growth_pct = ((forecast_revenue - total_revenue) / total_revenue) * 100
+    else:
+        growth_pct = 0.0
+
+    if revenue_vs_forecast >= 100:
+        forecast_message = (
+            "Actual revenue is ahead of forecast, so leadership should protect the strongest "
+            "markets while scaling carefully."
+        )
+    else:
+        forecast_gap = 100 - revenue_vs_forecast
+        forecast_message = (
+            f"Actual revenue is {forecast_gap:.1f}% below forecast, so executive attention "
+            "should focus on closing the gap between current sales and expected pipeline value."
+        )
+
+    if target_achievement >= 100:
+        target_message = f"The revenue target has been exceeded at {target_achievement:.1f}% achievement."
+    else:
+        target_gap = 100 - target_achievement
+        target_message = (
+            f"The business is {target_gap:.1f}% below target, meaning conversion speed and "
+            "follow-up quality need improvement."
+        )
+
+    return {
+        "best_country": best_country,
+        "review_country": review_country,
+        "protect_country": protect_country,
+        "best_service": best_service,
+        "growth_pct": growth_pct,
+        "forecast_message": forecast_message,
+        "target_message": target_message,
+        "web_influenced_revenue": web_influenced_revenue,
+    }
+
+
+def render_recommendations(values):
+    """Render recommendations as one safe HTML line to avoid Markdown code-block issues."""
+    growth_pct = values["growth_pct"]
+    growth_sign = "+" if growth_pct >= 0 else "-"
+
+    rec_html = (
+        '<div class="exec-rec-card">'
+        '<div class="exec-rec-row">'
+        '<span class="exec-rec-tag invest">INVEST</span>'
+        '<div class="exec-rec-text">'
+        f'Prioritise <b>{values["best_country"]}</b> because it is currently producing the strongest revenue signal. '
+        f'The strongest service line is <b>{values["best_service"]}</b>, so this should receive focused sales and marketing support.'
+        '</div>'
+        '</div>'
+        '<div class="exec-rec-row">'
+        '<span class="exec-rec-tag review">REVIEW</span>'
+        '<div class="exec-rec-text">'
+        f'Review <b>{values["review_country"]}</b> because its conversion performance is weaker than other markets. '
+        'This may indicate pricing friction, slow follow-up, weak sales handover, or poor market fit.'
+        '</div>'
+        '</div>'
+        '<div class="exec-rec-row">'
+        '<span class="exec-rec-tag protect">PROTECT</span>'
+        '<div class="exec-rec-text">'
+        f'Protect <b>{values["protect_country"]}</b> because it has the strongest conversion value. '
+        'This market should not be neglected while chasing new opportunities elsewhere.'
+        '</div>'
+        '</div>'
+        '<div class="exec-rec-divider"></div>'
+        '<div class="exec-rec-foot">'
+        f'Expected next-period movement: <b>{growth_sign}{abs(growth_pct):.1f}%</b>.<br>'
+        f'{values["forecast_message"]}'
+        '</div>'
+        '</div>'
+    )
+
+    st.markdown(rec_html, unsafe_allow_html=True)
+
+
+# ============================================================================
+# CSS
+# ============================================================================
+def executive_css():
+    css = f"""
+    <style>
+        .exec-page-title {{
+            font-size: 28px;
+            color: {TEXT_LIGHT};
+            font-weight: 950;
+            letter-spacing: -0.8px;
+            margin: 2px 0 3px 2px;
+        }}
+
+        .exec-page-sub {{
+            color: {TEXT_MUTED};
+            font-size: 12px;
+            margin: 0 0 12px 2px;
+        }}
+
+        .exec-filter-bar-label {{
+            color: #8f96b5;
+            font-size: 10px;
+            font-weight: 900;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            margin: 4px 0 7px 2px;
+        }}
+
+        .exec-timeline {{
+            background: rgba(109, 40, 217, 0.13);
+            border: 1px solid {CARD_BORDER};
+            border-radius: 12px;
+            padding: 8px 12px;
+            margin: 0 0 14px 2px;
+            color: {LILAC};
+            font-size: 10px;
+            font-weight: 800;
+        }}
+
+        .exec-section-heading {{
+            color: {TEXT_LIGHT};
+            font-size: 14px;
+            font-weight: 850;
+            margin: 6px 0 10px 2px;
+            letter-spacing: -0.2px;
+        }}
+
+        .exec-kpi-card {{
+            background: radial-gradient(circle at 85% 0%, rgba(109,40,217,0.30), transparent 42%), {CARD_BG};
+            border: 1px solid {CARD_BORDER};
+            border-radius: 16px;
+            padding: 13px 15px;
+            min-height: 112px;
+            box-shadow: 0 14px 36px rgba(0,0,0,0.22);
+            transition: transform 0.18s ease;
+        }}
+
+        .exec-kpi-card:hover {{
+            transform: translateY(-2px);
+        }}
+
+        .exec-kpi-card.featured {{
+            background:
+                radial-gradient(circle at 82% 72%, rgba(196,181,253,0.22), transparent 34%),
+                linear-gradient(135deg, #2e1065 0%, #6d28d9 48%, #a855f7 100%);
+            border: 1px solid rgba(196,181,253,0.34);
+        }}
+
+        .exec-kpi-label {{
+            color: #a9aed0;
+            font-size: 9px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }}
+
+        .exec-kpi-value {{
+            color: {TEXT_LIGHT};
+            font-size: 20px;
+            font-weight: 950;
+            letter-spacing: -0.45px;
+            line-height: 1.05;
+            margin-bottom: 6px;
+        }}
+
+        .exec-kpi-note {{
+            color: {TEXT_MUTED};
+            font-size: 9px;
+            margin-top: 5px;
+            line-height: 1.25;
+        }}
+
+        .exec-chart-card {{
+            background: radial-gradient(circle at 85% 0%, rgba(109,40,217,0.18), transparent 50%), {CARD_BG};
+            border: 1px solid {CARD_BORDER};
+            border-radius: 16px;
+            padding: 14px 16px 8px 16px;
+            box-shadow: 0 16px 40px rgba(0,0,0,0.24);
+            margin-bottom: 12px;
+        }}
+
+        .exec-chart-title {{
+            color: {TEXT_LIGHT};
+            font-size: 14px;
+            font-weight: 850;
+            margin-bottom: 3px;
+        }}
+
+        .exec-chart-sub {{
+            color: {TEXT_MUTED};
+            font-size: 10px;
+            margin-bottom: 8px;
+        }}
+
+        .exec-rec-card {{
+            background: radial-gradient(circle at 90% 0%, rgba(124,58,237,0.22), transparent 50%), {CARD_BG};
+            border: 1px solid {CARD_BORDER};
+            border-radius: 16px;
+            padding: 16px 18px;
+            box-shadow: 0 18px 45px rgba(0,0,0,0.26);
+            margin-top: 6px;
+        }}
+
+        .exec-rec-row {{
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 10px;
+        }}
+
+        .exec-rec-tag {{
+            font-weight: 950;
+            font-size: 9px;
+            letter-spacing: 0.7px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            min-width: 64px;
+            text-align: center;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }}
+
+        .exec-rec-tag.invest {{
+            background: rgba(34,197,94,0.16);
+            color: {GREEN};
+        }}
+
+        .exec-rec-tag.review {{
+            background: rgba(239,68,68,0.16);
+            color: {RED};
+        }}
+
+        .exec-rec-tag.protect {{
+            background: rgba(59,130,246,0.16);
+            color: {BLUE};
+        }}
+
+        .exec-rec-text {{
+            color: #cbd5e1;
+            font-size: 11px;
+            font-weight: 600;
+            line-height: 1.4;
+        }}
+
+        .exec-rec-divider {{
+            height: 1px;
+            background: {CARD_BORDER};
+            margin: 12px 0 13px 0;
+        }}
+
+        .exec-rec-foot {{
+            color: {TEXT_MUTED};
+            font-size: 11px;
+            line-height: 1.55;
+        }}
+
+        .exec-rec-foot b {{
+            color: #e2e8f0;
+            font-weight: 900;
+        }}
+
+        .exec-caption {{
+            color: #6b7280;
+            font-size: 10px;
+            text-align: center;
+            margin-top: 20px;
+        }}
+
+        /* Date input visibility fix */
+        div[data-testid="stDateInput"] label {{
+            color: #cbd5e1 !important;
+            font-weight: 800 !important;
+        }}
+
+        div[data-testid="stDateInput"] div[data-baseweb="input"] {{
+            background: rgba(30, 41, 59, 0.88) !important;
+            border: 1px solid rgba(148, 163, 184, 0.38) !important;
+            border-radius: 12px !important;
+        }}
+
+        div[data-testid="stDateInput"] input {{
+            color: #f8fafc !important;
+            -webkit-text-fill-color: #f8fafc !important;
+            background: transparent !important;
+            opacity: 1 !important;
+        }}
+
+        div[data-testid="stDateInput"] input::placeholder {{
+            color: #e2e8f0 !important;
+            -webkit-text-fill-color: #e2e8f0 !important;
+            opacity: 1 !important;
+        }}
+
+        div[data-baseweb="popover"] {{
+            z-index: 999999 !important;
+        }}
+    </style>
+    """
+
+    render_html(css)
+
+
+# ============================================================================
+# CHART THEME
+# ============================================================================
+def apply_dark_chart_layout(fig, height=240):
+    fig.update_layout(
+        height=height,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, system-ui", color=TEXT_MUTED, size=10),
+        margin=dict(l=6, r=6, t=6, b=6),
+        hoverlabel=dict(bgcolor=CARD_BG, bordercolor=PURPLE, font_color=TEXT_LIGHT),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            xanchor="left",
+            x=0,
+            font=dict(color=TEXT_MUTED, size=9),
+        ),
+    )
+
+    fig.update_xaxes(showgrid=False, zeroline=False, tickfont=dict(color=TEXT_MUTED, size=9))
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="rgba(148,113,255,0.10)",
+        zeroline=False,
+        tickfont=dict(color=TEXT_MUTED, size=9),
+    )
+
+    return fig
+
+
+def render_chart(fig, key, expanded_key, expanded_height=520):
+    st.plotly_chart(fig, use_container_width=True, key=key, config=COMPACT_CHART_CONFIG)
+
+    with st.expander("↗ Expand chart", expanded=False):
+        expanded_fig = go.Figure(fig)
+        expanded_fig.update_layout(height=expanded_height)
+        st.plotly_chart(
+            expanded_fig,
+            use_container_width=True,
+            key=expanded_key,
+            config=EXPANDED_CHART_CONFIG,
+        )
+
+
+# ============================================================================
+# MAIN PAGE
+# ============================================================================
+def show(filtered_df: pd.DataFrame) -> None:
+    executive_css()
+
+    # Clear older Streamlit date-state that used to force-select a date range.
+    date_filter_version = "historical_date_window_v4"
+
+    if st.session_state.get("_exec_date_filter_version") != date_filter_version:
+        st.session_state.pop("exec_date_range", None)
+        st.session_state["_exec_date_filter_version"] = date_filter_version
+
+    if st.session_state.pop("_exec_reset_filters", False):
+        for key in ("exec_date_range", "exec_country", "exec_service", "exec_industry"):
+            st.session_state.pop(key, None)
+
+    if filtered_df is None or filtered_df.empty:
+        st.warning("No executive data is available.")
+        return
+
+    filtered_df = build_executive_source(filtered_df)
+
+    if filtered_df.empty:
+        st.warning("No executive data is available after loading the historical dataset.")
+        return
+
+    # Top action row
+    nav_left, _spacer, nav_right = st.columns([1.4, 4.8, 1.3])
+
+    with nav_left:
+        if st.button("← Back to Overview", use_container_width=True, key="exec_back_btn"):
+            st.session_state["active_page"] = "Overview"
+            st.rerun()
+
+    with nav_right:
+        if st.button("↺ Reset Filters", use_container_width=True, key="exec_reset_btn"):
+            st.session_state["_exec_reset_filters"] = True
+            st.rerun()
+
+    render_html("""
+        <div class="exec-page-title">Executive Dashboard</div>
+        <div class="exec-page-sub">
+            Strategic performance • Revenue movement • Web-influenced business impact
+        </div>
+    """)
+
+    # Filters
+    render_html('<div class="exec-filter-bar-label">Filters</div>')
+
+    f1, f2, f3, f4 = st.columns(4)
+
+    valid_dates = filtered_df["inquiry_date"].dropna()
+    min_date, max_date = get_date_limits(valid_dates)
+
+    with f1:
+        if min_date is not None:
+            raw_date_range = st.date_input(
+                "Date Range",
+                value=(),
+                min_value=min_date,
+                max_value=max_date,
+                format="YYYY/MM/DD",
+                key="exec_date_range",
+            )
+            start_date, end_date = normalise_date_range(raw_date_range)
+        else:
+            start_date = None
+            end_date = None
+
+    with f2:
+        countries = ["All"] + sorted(filtered_df["country"].dropna().astype(str).unique().tolist())
+        selected_country = st.selectbox("Country", countries, key="exec_country")
+
+    with f3:
+        services = ["All"] + sorted(filtered_df["service_type"].dropna().astype(str).unique().tolist())
+        selected_service = st.selectbox("Service / Product", services, key="exec_service")
+
+    with f4:
+        industries = ["All"] + sorted(filtered_df["industry"].dropna().astype(str).unique().tolist())
+        selected_industry = st.selectbox("Industry", industries, key="exec_industry")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Apply dropdown filters first
+    base_df = filtered_df.copy()
+
+    if selected_country != "All":
+        base_df = base_df[base_df["country"].astype(str) == selected_country]
+
+    if selected_service != "All":
+        base_df = base_df[base_df["service_type"].astype(str) == selected_service]
+
+    if selected_industry != "All":
+        base_df = base_df[base_df["industry"].astype(str) == selected_industry]
+
+    # Apply date filter only after the user manually selects a complete date range.
+    prev_start, prev_end = get_previous_period(start_date, end_date)
+    df = filter_date(base_df, start_date, end_date)
+    previous_df = filter_date(base_df, prev_start, prev_end)
+
+    render_html(f"""
+        <div class="exec-timeline">
+            Current: {date_label(start_date, end_date)}
+            &nbsp; | &nbsp;
+            Comparison: {date_label(prev_start, prev_end)}
+        </div>
+    """)
+
+    if df.empty:
+        st.warning("No records match the current filters. Try widening them above.")
+        return
+
+    # KPI calculations
+    total_revenue = float(df["actual_revenue"].sum())
+    forecast_revenue = float(df["forecast_revenue"].sum())
+    target_revenue = float(df["target_revenue"].sum())
+
+    won_deals = int(df["converted"].sum())
+    total_leads = int(len(df))
+
+    conversion_rate = safe_rate(won_deals, total_leads)
+    revenue_vs_forecast = safe_rate(total_revenue, forecast_revenue) if forecast_revenue > 0 else 0
+    target_achievement = safe_rate(total_revenue, target_revenue)
+
+    current_web_mask = web_active_mask(df)
+    web_influenced_revenue = float(df.loc[current_web_mask, "actual_revenue"].sum())
+
+    # KPI cards
+    render_html('<div class="exec-section-heading">Key Performance Indicators</div>')
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    with c1:
+        render_html(f"""
+            <div class="exec-kpi-card featured">
+                <div class="exec-kpi-label">Actual Revenue</div>
+                <div class="exec-kpi-value">{compact_money(total_revenue)}</div>
+                <div class="exec-kpi-note">Closed revenue</div>
+            </div>
+        """)
+
+    with c2:
+        render_html(f"""
+            <div class="exec-kpi-card">
+                <div class="exec-kpi-label">Revenue vs Target</div>
+                <div class="exec-kpi-value">{target_achievement:.1f}%</div>
+                <div class="exec-kpi-note">Target achievement</div>
+            </div>
+        """)
+
+    with c3:
+        render_html(f"""
+            <div class="exec-kpi-card">
+                <div class="exec-kpi-label">Forecast Revenue</div>
+                <div class="exec-kpi-value">{compact_money(forecast_revenue)}</div>
+                <div class="exec-kpi-note">Expected pipeline value</div>
+            </div>
+        """)
+
+    with c4:
+        render_html(f"""
+            <div class="exec-kpi-card">
+                <div class="exec-kpi-label">Conversion Rate</div>
+                <div class="exec-kpi-value">{conversion_rate:.1f}%</div>
+                <div class="exec-kpi-note">Deals from enquiries</div>
+            </div>
+        """)
+
+    with c5:
+        render_html(f"""
+            <div class="exec-kpi-card">
+                <div class="exec-kpi-label">Web Revenue</div>
+                <div class="exec-kpi-value">{compact_money(web_influenced_revenue)}</div>
+                <div class="exec-kpi-note">IIS-influenced revenue</div>
+            </div>
+        """)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Charts
+    chart_col1, chart_col2 = st.columns([3, 2])
+
+    with chart_col1:
+        render_html("""
+            <div class="exec-chart-card">
+                <div class="exec-chart-title">Monthly Revenue Trend</div>
+                <div class="exec-chart-sub">Actual revenue compared with forecast movement.</div>
+            </div>
+        """)
+
+        trend_df = df.dropna(subset=["inquiry_date"]).copy()
+
+        if not trend_df.empty:
+            trend_df["month_start"] = trend_df["inquiry_date"].dt.to_period("M").dt.to_timestamp()
+
+            monthly = (
+                trend_df.groupby("month_start", as_index=False)
+                .agg(
+                    actual=("actual_revenue", "sum"),
+                    forecast=("forecast_revenue", "sum"),
+                )
+                .sort_values("month_start")
+            )
+
+            monthly["month_label"] = monthly["month_start"].dt.strftime("%b %Y")
+
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=monthly["month_label"],
+                    y=monthly["forecast"],
+                    mode="lines+markers",
+                    name="Forecast",
+                    line=dict(color=LILAC, width=2.2),
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=monthly["month_label"],
+                    y=monthly["actual"],
+                    mode="lines+markers",
+                    name="Actual",
+                    line=dict(color=PURPLE, width=3.0),
+                )
+            )
+
+            fig = apply_dark_chart_layout(fig, height=240)
+            fig.update_layout(hovermode="x unified")
+            fig.update_yaxes(tickprefix="BWP ")
+
+            render_chart(fig, "exec_monthly_chart", "exec_monthly_chart_expanded")
+        else:
+            st.info("No inquiry date data available for trend analysis.")
+
+    with chart_col2:
+        render_html("""
+            <div class="exec-chart-card">
+                <div class="exec-chart-title">Revenue by Service</div>
+                <div class="exec-chart-sub">Share of revenue by product line.</div>
+            </div>
+        """)
+
+        service_rev = (
+            df.groupby("service_type", as_index=False)
+            .agg(actual_revenue=("actual_revenue", "sum"))
+            .sort_values("actual_revenue", ascending=False)
+        )
+
+        if not service_rev.empty:
+            fig2 = go.Figure(
+                go.Pie(
+                    labels=service_rev["service_type"],
+                    values=service_rev["actual_revenue"],
+                    hole=0.58,
+                    marker=dict(colors=[PURPLE, PURPLE_DEEP, LILAC, GREEN, ORANGE, BLUE]),
+                )
+            )
+
+            fig2 = apply_dark_chart_layout(fig2, height=240)
+            render_chart(fig2, "exec_service_donut", "exec_service_donut_expanded")
+        else:
+            st.info("Service data not available.")
+
+    # Strategic Recommendations
+    render_html('<div class="exec-section-heading">Strategic Recommendations</div>')
+
+    values = get_recommendation_values(
+        df,
+        total_revenue,
+        forecast_revenue,
+        revenue_vs_forecast,
+        target_achievement,
+        web_influenced_revenue,
+    )
+
+    render_recommendations(values)
+
+    # Footer
+    render_html("""
+        <div class="exec-caption">
+            Data as of May 2026 • CyberNova Analytics Ltd • All figures in BWP (Botswana Pula)
+        </div>
+    """)

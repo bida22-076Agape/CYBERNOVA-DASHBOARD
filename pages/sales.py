@@ -1,0 +1,1565 @@
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import html
+from pathlib import Path
+from datetime import timedelta
+from textwrap import dedent
+
+
+# ============================================================
+# COLOUR TOKENS - SALES PURPLE THEME
+# ============================================================
+PURPLE = "#7c3aed"
+PURPLE_DEEP = "#3b008f"
+PURPLE_BORDER = "rgba(196, 181, 253, 0.22)"
+LILAC = "#c084fc"
+PINK = "#ec4899"
+GREEN = "#22c55e"
+RED = "#ef4444"
+ORANGE = "#f59e0b"
+BLUE = "#38bdf8"
+TEXT_LIGHT = "#f8fafc"
+TEXT_MUTED = "#a1a1aa"
+CARD_BG = "rgba(14, 13, 30, 0.96)"
+
+
+# ============================================================
+# BASIC HELPERS
+# ============================================================
+def render_html(markup: str) -> None:
+    st.markdown(dedent(markup).strip(), unsafe_allow_html=True)
+
+
+def compact_money(value):
+    try:
+        value = float(value)
+
+        if abs(value) >= 1_000_000:
+            return f"BWP {value / 1_000_000:.1f}M"
+
+        if abs(value) >= 1_000:
+            return f"BWP {value / 1_000:.1f}K"
+
+        return f"BWP {value:,.0f}"
+
+    except Exception:
+        return "BWP 0"
+
+
+def percent(value):
+    try:
+        return f"{float(value):.1f}%"
+    except Exception:
+        return "0.0%"
+
+
+def safe_rate(numerator, denominator):
+    try:
+        denominator = float(denominator)
+
+        if denominator == 0:
+            return 0.0
+
+        return float(numerator) / denominator * 100
+
+    except Exception:
+        return 0.0
+
+
+def go_to_overview():
+    st.session_state.active_page = "Overview"
+    st.rerun()
+
+
+
+def render_dark_sales_table(df: pd.DataFrame) -> None:
+    """Render a dark purple HTML table instead of Streamlit's white dataframe."""
+    if df is None or df.empty:
+        st.info("No high-priority open leads match the current filters.")
+        return
+
+    numeric_columns = {
+        "Lead Score",
+        "Web Visits",
+        "High-Intent Hits",
+        "Demo Requests",
+        "Contract Confirms",
+    }
+
+    money_columns = {
+        "Forecast Revenue",
+        "Weighted Value",
+    }
+
+    action_columns = {
+        "Suggested Action",
+    }
+
+    header_html = "".join(
+        f'<th class="{"num" if col in numeric_columns or col in money_columns else ""}">'
+        f"{html.escape(str(col))}</th>"
+        for col in df.columns
+    )
+
+    rows_html = ""
+
+    for _, row in df.iterrows():
+        cells_html = ""
+
+        for col in df.columns:
+            value = "" if pd.isna(row[col]) else str(row[col])
+            css_class = ""
+
+            if col in numeric_columns or col in money_columns:
+                css_class = "num"
+
+            if col in action_columns:
+                css_class = "action"
+
+            cells_html += f'<td class="{css_class}">{html.escape(value)}</td>'
+
+        rows_html += f"<tr>{cells_html}</tr>"
+
+    render_html(f"""
+    <div class="sales-dark-table-wrap">
+        <table class="sales-dark-table">
+            <thead>
+                <tr>{header_html}</tr>
+            </thead>
+            <tbody>
+                {rows_html}
+            </tbody>
+        </table>
+    </div>
+    """)
+
+
+# ============================================================
+# DATA CLEANING
+# ============================================================
+def clean_sales_data(df):
+    df = df.copy()
+
+    # ------------------------------------------------------------
+    # Column compatibility
+    # ------------------------------------------------------------
+    if "service_type" not in df.columns and "service" in df.columns:
+        df["service_type"] = df["service"]
+
+    if "service" not in df.columns and "service_type" in df.columns:
+        df["service"] = df["service_type"]
+
+    if "sales_rep_name" not in df.columns and "sales_rep" in df.columns:
+        df["sales_rep_name"] = df["sales_rep"]
+
+    # ------------------------------------------------------------
+    # Text defaults
+    # ------------------------------------------------------------
+    text_defaults = {
+        "client_id": "Unknown",
+        "country": "Unknown",
+        "industry": "Unknown",
+        "service_type": "CyberNova Service",
+        "service": "CyberNova Service",
+        "sales_team": "Core Sales Team",
+        "sales_rep_name": "Unassigned",
+        "current_stage": "Inquiry",
+        "top_page": "No web activity"
+    }
+
+    for col, default in text_defaults.items():
+        if col not in df.columns:
+            df[col] = default
+
+        df[col] = df[col].fillna(default).astype(str)
+
+    # ------------------------------------------------------------
+    # Numeric defaults
+    # ------------------------------------------------------------
+    numeric_cols = [
+        "actual_revenue",
+        "forecast_revenue",
+        "target_revenue",
+        "converted",
+        "lead_score",
+        "conversion_probability",
+        "web_visit_count",
+        "total_web_requests",
+        "unique_sessions",
+        "demo_request_count",
+        "ai_assistant_request_count",
+        "promotional_event_count",
+        "contract_confirmation_count",
+        "proposal_download_count",
+        "high_intent_hits",
+        "web_error_count",
+        "avg_response_time_ms"
+    ]
+
+    for col in numeric_cols:
+        if col not in df.columns:
+            df[col] = 0
+
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # ------------------------------------------------------------
+    # Date defaults
+    # ------------------------------------------------------------
+    date_cols = [
+        "inquiry_date",
+        "close_date",
+        "demo_date",
+        "proposal_date",
+        "last_web_event",
+        "first_web_event"
+    ]
+
+    for col in date_cols:
+        if col not in df.columns:
+            df[col] = pd.NaT
+
+        df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    # ------------------------------------------------------------
+    # Probability normalisation
+    # ------------------------------------------------------------
+    if df["conversion_probability"].max() > 1:
+        df["conversion_probability"] = df["conversion_probability"] / 100
+
+    if df["conversion_probability"].sum() == 0 and "lead_score" in df.columns:
+        df["conversion_probability"] = (df["lead_score"] / 100).clip(0, 1)
+
+    df["converted"] = (df["converted"] > 0).astype(int)
+
+    return df
+
+
+# ============================================================
+# HISTORICAL DATA LOADING
+# ============================================================
+@st.cache_data(show_spinner=False)
+def load_historical_sales_dataset() -> pd.DataFrame:
+    """Load the stable historical sales dataset used by the Sales page.
+
+    This is important because the live dashboard feed can send rows dated with
+    the computer's current date. The Sales page must still show the proper
+    historical CyberNova dataset instead of going blank.
+    """
+    paths = [
+        Path("data/Cybernova_Final_Intelligence_v2.csv"),
+        Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
+    ]
+
+    for path in paths:
+        if path.exists():
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                continue
+
+    return pd.DataFrame()
+
+
+# ============================================================
+# STABLE DATE REFERENCE HELPERS
+# ============================================================
+@st.cache_data(show_spinner=False)
+def load_date_reference_dataset() -> pd.DataFrame:
+    """
+    Load the stable historical file used only for date limits.
+
+    This prevents live/simulated rows with the computer's current date
+    from pushing the Sales dashboard into 2026.
+    """
+    paths = [
+        Path("data/Cybernova_Final_Intelligence_v2.csv"),
+        Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
+    ]
+
+    for path in paths:
+        if path.exists():
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                continue
+
+    return pd.DataFrame()
+
+
+def get_reference_date_limits():
+    """Return the true historical inquiry_date range from the stable CSV."""
+    reference_df = load_date_reference_dataset()
+
+    if reference_df.empty or "inquiry_date" not in reference_df.columns:
+        return None, None
+
+    reference_dates = pd.to_datetime(
+        reference_df["inquiry_date"],
+        errors="coerce"
+    ).dropna()
+
+    if reference_dates.empty:
+        return None, None
+
+    return reference_dates.min().date(), reference_dates.max().date()
+
+
+def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+    """Remove accidental live/simulation rows outside the historical range."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    if start_date is None or end_date is None or "inquiry_date" not in df.columns:
+        return df.copy()
+
+    cleaned = df.copy()
+    dates = pd.to_datetime(cleaned["inquiry_date"], errors="coerce")
+    keep_mask = dates.isna() | ((dates.dt.date >= start_date) & (dates.dt.date <= end_date))
+
+    return cleaned.loc[keep_mask].copy()
+
+
+def build_sales_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
+    """Build the Sales page dataset from historical data plus valid incoming rows.
+
+    The app may pass live records dated 2026 because the simulation uses the
+    current computer date. Those records are useful for proving live refresh,
+    but they should not replace the historical project dataset on this page.
+    """
+    incoming_df = incoming_df.copy() if incoming_df is not None else pd.DataFrame()
+    historical_df = load_historical_sales_dataset()
+
+    reference_start, reference_end = get_reference_date_limits()
+
+    historical_df = keep_records_inside_reference_window(
+        historical_df,
+        reference_start,
+        reference_end,
+    )
+
+    incoming_df = keep_records_inside_reference_window(
+        incoming_df,
+        reference_start,
+        reference_end,
+    )
+
+    frames = []
+
+    if not historical_df.empty:
+        frames.append(historical_df)
+
+    if not incoming_df.empty:
+        frames.append(incoming_df)
+
+    if not frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    combined = clean_sales_data(combined)
+
+    if "client_id" in combined.columns:
+        combined["_sort_date"] = combined["last_web_event"].fillna(combined["inquiry_date"])
+        combined = combined.sort_values("_sort_date")
+        combined = combined.drop_duplicates(subset=["client_id"], keep="last")
+        combined = combined.drop(columns=["_sort_date"], errors="ignore")
+
+    return combined
+
+
+def get_date_limits(valid_dates: pd.Series):
+    """Return date limits for the filter without forcing a selected range."""
+    reference_start, reference_end = get_reference_date_limits()
+
+    if reference_start is not None and reference_end is not None:
+        return reference_start, reference_end
+
+    if valid_dates.empty:
+        return None, None
+
+    return valid_dates.min().date(), valid_dates.max().date()
+
+
+def normalise_date_range(date_range):
+    """
+    Keep the date filter empty unless the user has selected a complete range.
+    """
+    if date_range is None:
+        return None, None
+
+    if isinstance(date_range, (tuple, list)):
+        if len(date_range) == 2 and date_range[0] is not None and date_range[1] is not None:
+            start_date = date_range[0]
+            end_date = date_range[1]
+
+            if start_date > end_date:
+                start_date, end_date = end_date, start_date
+
+            return start_date, end_date
+
+    return None, None
+
+
+# ============================================================
+# PERIOD / TIMELINE HELPERS
+# ============================================================
+def get_previous_period(start_date, end_date):
+    if start_date is None or end_date is None:
+        return None, None
+
+    number_of_days = (end_date - start_date).days + 1
+    previous_end = start_date - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=number_of_days - 1)
+
+    return previous_start, previous_end
+
+
+def date_label(start_date, end_date):
+    if start_date is None or end_date is None:
+        return "Full available timeline"
+
+    return f"{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}"
+
+
+def filter_date(df, start_date, end_date, date_col="inquiry_date"):
+    if start_date is None or end_date is None or date_col not in df.columns:
+        return df.copy()
+
+    dates = pd.to_datetime(df[date_col], errors="coerce")
+
+    return df[
+        (dates.dt.date >= start_date)
+        & (dates.dt.date <= end_date)
+    ].copy()
+
+
+# ============================================================
+# KPI CALCULATION HELPERS
+# ============================================================
+def weighted_pipeline(df):
+    if df.empty:
+        return 0.0
+
+    open_df = df[df["converted"] == 0].copy()
+
+    if open_df.empty:
+        return 0.0
+
+    return float(
+        (
+            open_df["forecast_revenue"]
+            * open_df["conversion_probability"]
+        ).sum()
+    )
+
+
+def sales_velocity_days(df):
+    if df.empty:
+        return 0.0
+
+    temp = df[
+        (df["converted"] == 1)
+        & df["inquiry_date"].notna()
+        & df["close_date"].notna()
+    ].copy()
+
+    if temp.empty:
+        return 0.0
+
+    temp["days_to_close"] = (
+        temp["close_date"] - temp["inquiry_date"]
+    ).dt.days
+
+    temp = temp[temp["days_to_close"] >= 0]
+
+    if temp.empty:
+        return 0.0
+
+    return float(temp["days_to_close"].mean())
+
+
+def delta_badge(
+    current,
+    previous,
+    higher_is_good=True,
+    mode="percent",
+    context="change"
+):
+    """
+    Shows whether the KPI increased or decreased compared to the previous period.
+
+    Timeline logic:
+    - Current period = selected date range.
+    - Previous period = same number of days immediately before the selected range.
+    """
+    try:
+        current = float(current)
+        previous = float(previous)
+    except Exception:
+        return '<span class="sales-kpi-delta neutral">● No comparison available</span>'
+
+    if abs(previous) < 1e-9:
+        return '<span class="sales-kpi-delta neutral">● Baseline period</span>'
+
+    if mode == "points":
+        change = current - previous
+        arrow = "↑" if change >= 0 else "↓"
+        good = change >= 0 if higher_is_good else change <= 0
+        css_class = "good" if good else "bad"
+
+        return (
+            f'<span class="sales-kpi-delta {css_class}">'
+            f'{arrow} {abs(change):.1f} pts vs previous period'
+            f'</span>'
+        )
+
+    change = ((current - previous) / abs(previous)) * 100
+    arrow = "↑" if change >= 0 else "↓"
+    good = change >= 0 if higher_is_good else change <= 0
+    css_class = "good" if good else "bad"
+
+    if context == "money":
+        meaning = "profit gain" if good else "revenue loss"
+    elif context == "speed":
+        meaning = "faster close" if good else "slower close"
+    elif context == "risk":
+        meaning = "risk reduced" if good else "risk increased"
+    else:
+        meaning = "improved" if good else "declined"
+
+    return (
+        f'<span class="sales-kpi-delta {css_class}">'
+        f'{arrow} {abs(change):.1f}% {meaning}'
+        f'</span>'
+    )
+
+
+# ============================================================
+# CSS - SALES DASHBOARD
+# ============================================================
+def sales_css():
+    render_html(f"""
+    <style>
+        .stApp {{
+            background:
+                radial-gradient(circle at 18% 12%, rgba(124, 58, 237, 0.26), transparent 32%),
+                radial-gradient(circle at 82% 22%, rgba(236, 72, 153, 0.18), transparent 34%),
+                radial-gradient(circle at 50% 90%, rgba(91, 5, 245, 0.18), transparent 38%),
+                linear-gradient(135deg, #090015 0%, #120025 48%, #05000d 100%) !important;
+            color: {TEXT_LIGHT} !important;
+        }}
+
+        .block-container {{
+            max-width: 1450px !important;
+            padding-top: 0.8rem !important;
+            padding-left: 1.6rem !important;
+            padding-right: 1.6rem !important;
+        }}
+
+        .sales-page-title {{
+            font-size: 34px;
+            color: {TEXT_LIGHT};
+            font-weight: 950;
+            letter-spacing: -1px;
+            margin: 6px 0 4px 2px;
+        }}
+
+        .sales-page-sub {{
+            color: {TEXT_MUTED};
+            font-size: 14px;
+            margin: 0 0 10px 2px;
+        }}
+
+        .sales-timeline {{
+            background: rgba(124, 58, 237, 0.13);
+            border: 1px solid rgba(196, 181, 253, 0.22);
+            border-radius: 16px;
+            padding: 9px 14px;
+            margin: 0 0 14px 2px;
+            color: #d8b4fe;
+            font-size: 12px;
+            font-weight: 800;
+        }}
+
+        .sales-section-heading {{
+            color: {TEXT_LIGHT};
+            font-size: 15px;
+            font-weight: 850;
+            margin: 6px 0 10px 2px;
+        }}
+
+        .sales-filter-label {{
+            color: #b5a7e8;
+            font-size: 12px;
+            font-weight: 900;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            margin: 4px 0 8px 2px;
+        }}
+
+        div[data-baseweb="select"] > div,
+        div[data-baseweb="input"] {{
+            background: rgba(24, 13, 49, 0.96) !important;
+            border: 1px solid rgba(196, 181, 253, 0.24) !important;
+            border-radius: 14px !important;
+            min-height: 44px !important;
+            color: {TEXT_LIGHT} !important;
+            box-shadow: none !important;
+        }}
+
+        div[data-baseweb="select"] span,
+        div[data-baseweb="input"] input,
+        input {{
+            color: {TEXT_LIGHT} !important;
+        }}
+
+        label {{
+            color: #b5a7e8 !important;
+            font-size: 12px !important;
+            font-weight: 700 !important;
+        }}
+
+        div.stButton > button {{
+            background:
+                radial-gradient(circle at 90% 0%, rgba(196, 181, 253, 0.18), transparent 36%),
+                linear-gradient(135deg, rgba(28, 13, 55, 0.98), rgba(63, 0, 143, 0.96)) !important;
+            color: {TEXT_LIGHT} !important;
+            border: 1px solid rgba(196, 181, 253, 0.28) !important;
+            border-radius: 14px !important;
+            font-weight: 850 !important;
+            box-shadow: 0 12px 32px rgba(0,0,0,0.22) !important;
+        }}
+
+        div.stButton > button:hover {{
+            background:
+                radial-gradient(circle at 90% 0%, rgba(216, 180, 254, 0.25), transparent 36%),
+                linear-gradient(135deg, #25006e, #7c3aed) !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(216, 180, 254, 0.55) !important;
+            transform: translateY(-1px);
+        }}
+
+        div.stButton > button p {{
+            color: #ffffff !important;
+            font-weight: 850 !important;
+        }}
+
+        .sales-kpi-card {{
+            background:
+                radial-gradient(circle at 85% 0%, rgba(124, 58, 237, 0.36), transparent 42%),
+                linear-gradient(135deg, rgba(26, 13, 54, 0.98), rgba(13, 8, 31, 0.98));
+            border: 1px solid {PURPLE_BORDER};
+            border-radius: 14px;
+            padding: 8px 10px;
+            min-height: 122px;
+            box-shadow: 0 18px 55px rgba(0,0,0,0.30);
+        }}
+
+        .sales-kpi-card.featured {{
+            background:
+                radial-gradient(circle at 82% 72%, rgba(216, 180, 254, 0.28), transparent 34%),
+                linear-gradient(135deg, #25006e 0%, #5b05f5 46%, #7c3aed 100%);
+            border: 1px solid rgba(216, 180, 254, 0.36);
+        }}
+
+        .sales-kpi-label {{
+            color: #b5a7e8;
+            font-size: 12px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            margin-bottom: 6px;
+        }}
+
+        .sales-kpi-value {{
+            color: {TEXT_LIGHT};
+            font-size: 22px;
+            font-weight: 950;
+            letter-spacing: -0.5px;
+            line-height: 1.15;
+            margin-bottom: 5px;
+        }}
+
+        .sales-kpi-note {{
+            color: {TEXT_MUTED};
+            font-size: 11px;
+            margin-top: 6px;
+            line-height: 1.35;
+        }}
+
+        .sales-kpi-delta {{
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            border-radius: 999px;
+            padding: 3px 8px;
+            font-size: 11px;
+            font-weight: 850;
+            border: 1px solid transparent;
+        }}
+
+        .sales-kpi-delta.good {{
+            color: #bbf7d0;
+            background: rgba(34,197,94,0.13);
+            border-color: rgba(34,197,94,0.22);
+        }}
+
+        .sales-kpi-delta.bad {{
+            color: #fecaca;
+            background: rgba(239,68,68,0.13);
+            border-color: rgba(239,68,68,0.22);
+        }}
+
+        .sales-kpi-delta.neutral {{
+            color: #d8b4fe;
+            background: rgba(196,181,253,0.13);
+            border-color: rgba(196,181,253,0.22);
+        }}
+
+        .sales-chart-card {{
+            background:
+                radial-gradient(circle at 85% 0%, rgba(124, 58, 237, 0.20), transparent 50%),
+                {CARD_BG};
+            border: 1px solid {PURPLE_BORDER};
+            border-radius: 14px;
+            padding: 15px 16px 8px 16px;
+            box-shadow: 0 18px 55px rgba(0,0,0,0.30);
+            margin-bottom: 12px;
+        }}
+
+        .sales-chart-title {{
+            color: {TEXT_LIGHT};
+            font-size: 15px;
+            font-weight: 850;
+            margin-bottom: 4px;
+        }}
+
+        .sales-chart-sub {{
+            color: {TEXT_MUTED};
+            font-size: 12px;
+            margin-bottom: 8px;
+        }}
+
+        div[data-testid="stDataFrame"] {{
+            border: 1px solid {PURPLE_BORDER};
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 18px 55px rgba(0,0,0,0.18);
+        }}
+
+        .sales-dark-table-wrap {{
+            width: 100%;
+            overflow-x: auto;
+            border: 1px solid rgba(196, 181, 253, 0.22);
+            border-radius: 14px;
+            background:
+                radial-gradient(circle at 85% 0%, rgba(124, 58, 237, 0.20), transparent 46%),
+                rgba(16, 8, 34, 0.96);
+            box-shadow: 0 18px 55px rgba(0,0,0,0.28);
+        }}
+
+        .sales-dark-table {{
+            width: 100%;
+            border-collapse: collapse;
+            color: #f8fafc;
+            font-size: 11px;
+            min-width: 980px;
+        }}
+
+        .sales-dark-table thead th {{
+            background:
+                linear-gradient(135deg, rgba(91, 5, 245, 0.38), rgba(37, 0, 110, 0.92));
+            color: #e9d5ff;
+            text-align: left;
+            font-weight: 900;
+            letter-spacing: 0.25px;
+            padding: 8px 10px;
+            border-bottom: 1px solid rgba(216, 180, 254, 0.24);
+            white-space: nowrap;
+        }}
+
+        .sales-dark-table tbody td {{
+            padding: 7px 10px;
+            border-bottom: 1px solid rgba(216, 180, 254, 0.10);
+            color: #e5e7eb;
+            vertical-align: top;
+        }}
+
+        .sales-dark-table tbody tr:nth-child(even) {{
+            background: rgba(124, 58, 237, 0.08);
+        }}
+
+        .sales-dark-table tbody tr:nth-child(odd) {{
+            background: rgba(15, 10, 34, 0.56);
+        }}
+
+        .sales-dark-table tbody tr:hover {{
+            background: rgba(124, 58, 237, 0.18);
+        }}
+
+        .sales-dark-table td.num,
+        .sales-dark-table th.num {{
+            text-align: right;
+        }}
+
+        .sales-dark-table td.action {{
+            color: #d8b4fe;
+            font-weight: 800;
+        }}
+
+
+        .sales-dark-table-wrap::-webkit-scrollbar {{
+            height: 7px;
+        }}
+
+        .sales-dark-table-wrap::-webkit-scrollbar-track {{
+            background: rgba(15, 10, 34, 0.65);
+            border-radius: 999px;
+        }}
+
+        .sales-dark-table-wrap::-webkit-scrollbar-thumb {{
+            background: rgba(196, 181, 253, 0.35);
+            border-radius: 999px;
+        }}
+
+        .sales-dark-table td {{
+            line-height: 1.25;
+        }}
+
+
+    </style>
+    """)
+
+
+# ============================================================
+# PLOTLY THEME
+# ============================================================
+def apply_dark_chart_layout(fig, height=210):
+    fig.update_layout(
+        height=height,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(
+            family="Inter, system-ui",
+            color=TEXT_MUTED,
+            size=12
+        ),
+        margin=dict(l=10, r=10, t=10, b=10),
+        hoverlabel=dict(
+            bgcolor="rgba(14,13,30,0.98)",
+            bordercolor=PURPLE,
+            font_color=TEXT_LIGHT
+        ),
+        legend=dict(
+            font=dict(color=TEXT_MUTED),
+            orientation="h",
+            yanchor="top",
+            y=-0.15,
+            xanchor="left",
+            x=0
+        )
+    )
+
+    fig.update_xaxes(
+        showgrid=False,
+        zeroline=False,
+        tickfont=dict(color=TEXT_MUTED)
+    )
+
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="rgba(196,181,253,0.10)",
+        zeroline=False,
+        tickfont=dict(color=TEXT_MUTED)
+    )
+
+    return fig
+
+
+# ============================================================
+# MAIN SALES PAGE
+# ============================================================
+def show(df):
+    sales_css()
+
+    # Clear old Streamlit date-state that used to force-select a date range.
+    date_filter_version = "historical_sales_combined_window_v2"
+
+    if st.session_state.get("_sales_date_filter_version") != date_filter_version:
+        st.session_state.pop("sales_date_range", None)
+        st.session_state["_sales_date_filter_version"] = date_filter_version
+
+    # ------------------------------------------------------------
+    # Reset filter state
+    # ------------------------------------------------------------
+    if st.session_state.pop("_sales_reset_filters", False):
+        for key in (
+            "sales_date_range",
+            "sales_team_filter",
+            "sales_rep_filter",
+            "sales_stage_filter"
+        ):
+            st.session_state.pop(key, None)
+
+    df = build_sales_source(df)
+
+    if df.empty:
+        st.warning(
+            "No sales data is available. Check that data/Cybernova_Final_Intelligence_v2.csv "
+            "exists and contains inquiry_date records."
+        )
+        return
+
+    # ------------------------------------------------------------
+    # Top buttons
+    # ------------------------------------------------------------
+    nav_left, spacer, nav_right = st.columns([1.6, 4.4, 1.4])
+
+    with nav_left:
+        if st.button(
+            "← Back to Overview",
+            use_container_width=True,
+            key="sales_back_btn"
+        ):
+            go_to_overview()
+
+    with nav_right:
+        if st.button(
+            "↺ Reset Filters",
+            use_container_width=True,
+            key="sales_reset_btn"
+        ):
+            st.session_state["_sales_reset_filters"] = True
+            st.rerun()
+
+    render_html("""
+    <div class="sales-page-title">Sales Dashboard</div>
+    <div class="sales-page-sub">
+        Pipeline performance • Sales velocity • High-intent web leads
+    </div>
+    """)
+
+    # ------------------------------------------------------------
+    # Filters
+    # ------------------------------------------------------------
+    render_html('<div class="sales-filter-label">Filters</div>')
+
+    f1, f2, f3, f4 = st.columns(4)
+
+    with f1:
+        valid_dates = df["inquiry_date"].dropna()
+        min_date, max_date = get_date_limits(valid_dates)
+
+        if min_date is not None:
+            raw_date_range = st.date_input(
+                "Date Range",
+                value=(),
+                min_value=min_date,
+                max_value=max_date,
+                format="YYYY/MM/DD",
+                key="sales_date_range"
+            )
+
+            start_date, end_date = normalise_date_range(raw_date_range)
+        else:
+            st.date_input(
+                "Date Range",
+                value=None,
+                key="sales_date_range",
+                disabled=True
+            )
+            start_date, end_date = None, None
+
+    with f2:
+        team_options = ["All"] + sorted(
+            df["sales_team"].dropna().astype(str).unique().tolist()
+        )
+
+        selected_team = st.selectbox(
+            "Team",
+            team_options,
+            key="sales_team_filter"
+        )
+
+    with f3:
+        rep_options = ["All"] + sorted(
+            df["sales_rep_name"].dropna().astype(str).unique().tolist()
+        )
+
+        selected_rep = st.selectbox(
+            "Owner",
+            rep_options,
+            key="sales_rep_filter"
+        )
+
+    with f4:
+        stage_options = ["All"] + sorted(
+            df["current_stage"].dropna().astype(str).unique().tolist()
+        )
+
+        selected_stage = st.selectbox(
+            "Stage",
+            stage_options,
+            key="sales_stage_filter"
+        )
+
+    # ------------------------------------------------------------
+    # Apply non-date filters first
+    # ------------------------------------------------------------
+    sales_base = df.copy()
+
+    if selected_team != "All":
+        sales_base = sales_base[
+            sales_base["sales_team"].astype(str) == selected_team
+        ]
+
+    if selected_rep != "All":
+        sales_base = sales_base[
+            sales_base["sales_rep_name"].astype(str) == selected_rep
+        ]
+
+    if selected_stage != "All":
+        sales_base = sales_base[
+            sales_base["current_stage"].astype(str) == selected_stage
+        ]
+
+    # ------------------------------------------------------------
+    # Current period and previous period
+    # ------------------------------------------------------------
+    prev_start, prev_end = get_previous_period(start_date, end_date)
+
+    sales_df = filter_date(sales_base, start_date, end_date)
+
+    if start_date is None or end_date is None:
+        previous_df = pd.DataFrame(columns=sales_base.columns)
+    else:
+        previous_df = filter_date(sales_base, prev_start, prev_end)
+
+    render_html(f"""
+    <div class="sales-timeline">
+        Current period: {date_label(start_date, end_date)}
+        &nbsp; | &nbsp;
+        KPI movement compares against: {date_label(prev_start, prev_end)}
+    </div>
+    """)
+
+    if sales_df.empty:
+        st.warning("No records match the current filters. Try widening the filters above.")
+        return
+
+    # ------------------------------------------------------------
+    # KPI calculations
+    # ------------------------------------------------------------
+    total_revenue = float(sales_df["actual_revenue"].sum())
+    previous_revenue = float(previous_df["actual_revenue"].sum())
+
+    total_leads = int(len(sales_df))
+    won_deals = int(sales_df["converted"].sum())
+
+    conversion_rate = safe_rate(won_deals, total_leads)
+    previous_conversion_rate = safe_rate(
+        previous_df["converted"].sum(),
+        len(previous_df)
+    )
+
+    active_pipeline = weighted_pipeline(sales_df)
+    previous_pipeline = weighted_pipeline(previous_df)
+
+    velocity = sales_velocity_days(sales_df)
+    previous_velocity = sales_velocity_days(previous_df)
+
+    web_hot_leads = int(
+        (
+            (sales_df["high_intent_hits"] > 0)
+            | (sales_df["demo_request_count"] > 0)
+            | (sales_df["contract_confirmation_count"] > 0)
+        ).sum()
+    )
+
+    if previous_df.empty:
+        previous_web_hot_leads = 0
+    else:
+        previous_web_hot_leads = int(
+            (
+                (previous_df["high_intent_hits"] > 0)
+                | (previous_df["demo_request_count"] > 0)
+                | (previous_df["contract_confirmation_count"] > 0)
+            ).sum()
+        )
+
+    # ------------------------------------------------------------
+    # Leads likely to convert soon
+    # ------------------------------------------------------------
+    open_leads = sales_df[sales_df["converted"] == 0].copy()
+
+    likely_to_convert = open_leads[
+        (open_leads["conversion_probability"] >= 0.50)
+        | (open_leads["lead_score"] >= 75)
+        | (open_leads["high_intent_hits"] > 0)
+        | (open_leads["demo_request_count"] > 0)
+    ].copy()
+
+    if not likely_to_convert.empty:
+        likely_to_convert["weighted_value"] = (
+            likely_to_convert["forecast_revenue"]
+            * likely_to_convert["conversion_probability"]
+        )
+
+        likely_to_convert = likely_to_convert.sort_values(
+            [
+                "conversion_probability",
+                "lead_score",
+                "high_intent_hits",
+                "demo_request_count",
+                "weighted_value"
+            ],
+            ascending=False
+        )
+
+    # ------------------------------------------------------------
+    # KPI cards
+    # ------------------------------------------------------------
+    render_html('<div class="sales-section-heading">Key Sales Indicators</div>')
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    with c1:
+        render_html(f"""
+        <div class="sales-kpi-card featured">
+            <div class="sales-kpi-label">Weighted Pipeline</div>
+            <div class="sales-kpi-value">{compact_money(active_pipeline)}</div>
+            {delta_badge(active_pipeline, previous_pipeline, True, context="money")}
+            <div class="sales-kpi-note">
+                Open forecast value weighted by conversion probability.
+            </div>
+        </div>
+        """)
+
+    with c2:
+        render_html(f"""
+        <div class="sales-kpi-card">
+            <div class="sales-kpi-label">Actual Revenue</div>
+            <div class="sales-kpi-value">{compact_money(total_revenue)}</div>
+            {delta_badge(total_revenue, previous_revenue, True, context="money")}
+            <div class="sales-kpi-note">
+                Green means more closed value; red means revenue loss.
+            </div>
+        </div>
+        """)
+
+    with c3:
+        render_html(f"""
+        <div class="sales-kpi-card">
+            <div class="sales-kpi-label">Conversion Rate</div>
+            <div class="sales-kpi-value">{conversion_rate:.1f}%</div>
+            {delta_badge(conversion_rate, previous_conversion_rate, True, mode="points")}
+            <div class="sales-kpi-note">
+                Shows how efficiently leads become contracts.
+            </div>
+        </div>
+        """)
+
+    with c4:
+        render_html(f"""
+        <div class="sales-kpi-card">
+            <div class="sales-kpi-label">Sales Velocity</div>
+            <div class="sales-kpi-value">{velocity:.0f} days</div>
+            {delta_badge(velocity, previous_velocity, False, context="speed")}
+            <div class="sales-kpi-note">
+                Lower days is better: faster inquiry-to-contract movement.
+            </div>
+        </div>
+        """)
+
+    with c5:
+        render_html(f"""
+        <div class="sales-kpi-card">
+            <div class="sales-kpi-label">Web Hot Leads</div>
+            <div class="sales-kpi-value">{web_hot_leads:,}</div>
+            {delta_badge(web_hot_leads, previous_web_hot_leads, True)}
+            <div class="sales-kpi-note">
+                Leads with demo, AI assistant, contract, or high-intent web signals.
+            </div>
+        </div>
+        """)
+
+    st.markdown("<div style=\"height:4px\"></div>", unsafe_allow_html=True)
+
+    # ============================================================
+    # CHART ROW 1
+    # ============================================================
+    chart_col1, chart_col2 = st.columns([1.25, 1.2])
+
+    # ------------------------------------------------------------
+    # Funnel chart
+    # ------------------------------------------------------------
+    with chart_col1:
+        render_html("""
+        <div class="sales-chart-card">
+            <div class="sales-chart-title">Sales Funnel by Stage</div>
+            <div class="sales-chart-sub">
+                Shows leakage across the pipeline instead of hiding it in a bar chart.
+            </div>
+        """)
+
+        stage_order = [
+            "Inquiry",
+            "Demo Requested",
+            "Proposal Sent",
+            "Contract Confirmed",
+            "Closed Won"
+        ]
+
+        stage_summary = sales_df.groupby(
+            "current_stage",
+            as_index=False
+        ).agg(
+            leads=("current_stage", "count")
+        )
+
+        stage_summary["order"] = stage_summary["current_stage"].apply(
+            lambda x: stage_order.index(x) if x in stage_order else 99
+        )
+
+        stage_summary = stage_summary.sort_values("order")
+
+        fig_funnel = go.Figure(
+            go.Funnel(
+                y=stage_summary["current_stage"],
+                x=stage_summary["leads"],
+                textinfo="value+percent initial",
+                marker=dict(
+                    color=[
+                        PURPLE_DEEP,
+                        PURPLE,
+                        LILAC,
+                        PINK,
+                        GREEN
+                    ][:len(stage_summary)]
+                ),
+                connector={
+                    "line": {
+                        "color": "rgba(216,180,254,0.7)",
+                        "width": 2
+                    }
+                }
+            )
+        )
+
+        fig_funnel = apply_dark_chart_layout(fig_funnel, height=210)
+        fig_funnel.update_layout(showlegend=False)
+
+        st.plotly_chart(
+            fig_funnel,
+            use_container_width=True,
+            key="sales_funnel_chart",
+            config={"displayModeBar": False}
+        )
+
+        render_html("</div>")
+
+    # ------------------------------------------------------------
+    # Revenue trend
+    # ------------------------------------------------------------
+    with chart_col2:
+        render_html("""
+        <div class="sales-chart-card">
+            <div class="sales-chart-title">Revenue Trend</div>
+            <div class="sales-chart-sub">
+                Monthly actual revenue and forecast pipeline.
+            </div>
+        """)
+
+        trend_df = sales_df.dropna(subset=["inquiry_date"]).copy()
+
+        if not trend_df.empty:
+            trend_df["month"] = trend_df["inquiry_date"].dt.to_period("M").astype(str)
+
+            monthly = trend_df.groupby(
+                "month",
+                as_index=False
+            ).agg(
+                actual_revenue=("actual_revenue", "sum"),
+                forecast_pipeline=("forecast_revenue", "sum")
+            )
+
+            fig_trend = go.Figure()
+
+            fig_trend.add_trace(
+                go.Scatter(
+                    x=monthly["month"],
+                    y=monthly["actual_revenue"],
+                    mode="lines+markers",
+                    name="Actual Revenue",
+                    line=dict(
+                        color=LILAC,
+                        width=3,
+                        shape="spline"
+                    ),
+                    hovertemplate="Actual Revenue: BWP %{y:,.0f}<extra></extra>"
+                )
+            )
+
+            fig_trend.add_trace(
+                go.Scatter(
+                    x=monthly["month"],
+                    y=monthly["forecast_pipeline"],
+                    mode="lines+markers",
+                    name="Forecast Pipeline",
+                    line=dict(
+                        color=BLUE,
+                        width=2.5,
+                        shape="spline"
+                    ),
+                    hovertemplate="Forecast Pipeline: BWP %{y:,.0f}<extra></extra>"
+                )
+            )
+
+            fig_trend = apply_dark_chart_layout(fig_trend, height=210)
+            fig_trend.update_yaxes(tickprefix="BWP ")
+
+            st.plotly_chart(
+                fig_trend,
+                use_container_width=True,
+                key="sales_revenue_trend",
+                config={"displayModeBar": False}
+            )
+
+        else:
+            st.info("No date data available for revenue trend.")
+
+        render_html("</div>")
+
+    # ============================================================
+    # CHART ROW 2
+    # ============================================================
+    chart_col3, chart_col4 = st.columns([1.2, 1.2])
+
+    # ------------------------------------------------------------
+    # Top sales reps
+    # ------------------------------------------------------------
+    with chart_col3:
+        render_html("""
+        <div class="sales-chart-card">
+            <div class="sales-chart-title">Top 5 Sales Reps</div>
+            <div class="sales-chart-sub">
+                Revenue contribution by owner with conversion context.
+            </div>
+        """)
+
+        rep_summary = sales_df.groupby(
+            "sales_rep_name",
+            as_index=False
+        ).agg(
+            actual_revenue=("actual_revenue", "sum"),
+            leads=("client_id", "count"),
+            won_deals=("converted", "sum"),
+            avg_score=("lead_score", "mean")
+        )
+
+        rep_summary["conversion_rate"] = rep_summary.apply(
+            lambda row: safe_rate(row["won_deals"], row["leads"]),
+            axis=1
+        )
+
+        top_reps = rep_summary.sort_values(
+            ["actual_revenue", "conversion_rate"],
+            ascending=False
+        ).head(5)
+
+        fig_reps = go.Figure(
+            go.Bar(
+                y=top_reps["sales_rep_name"][::-1],
+                x=top_reps["actual_revenue"][::-1],
+                orientation="h",
+                text=[
+                    compact_money(value)
+                    for value in top_reps["actual_revenue"][::-1]
+                ],
+                textposition="outside",
+                marker=dict(
+                    color=top_reps["actual_revenue"][::-1],
+                    colorscale=[
+                        [0, PURPLE_DEEP],
+                        [0.5, PURPLE],
+                        [1, LILAC]
+                    ]
+                ),
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Revenue: BWP %{x:,.0f}"
+                    "<extra></extra>"
+                )
+            )
+        )
+
+        fig_reps = apply_dark_chart_layout(fig_reps, height=210)
+        fig_reps.update_layout(showlegend=False)
+        fig_reps.update_xaxes(tickprefix="BWP ")
+
+        st.plotly_chart(
+            fig_reps,
+            use_container_width=True,
+            key="sales_top_reps",
+            config={"displayModeBar": False}
+        )
+
+        render_html("</div>")
+
+    # ------------------------------------------------------------
+    # Best converting service by country
+    # ------------------------------------------------------------
+    with chart_col4:
+        render_html("""
+        <div class="sales-chart-card">
+            <div class="sales-chart-title">Best Converting Service by Country</div>
+            <div class="sales-chart-sub">
+                Where each service converts best across markets.
+            </div>
+        """)
+
+        service_country = sales_df.groupby(
+            ["country", "service_type"],
+            as_index=False
+        ).agg(
+            leads=("client_id", "count"),
+            won=("converted", "sum")
+        )
+
+        service_country["conversion_rate"] = service_country.apply(
+            lambda row: safe_rate(row["won"], row["leads"]),
+            axis=1
+        )
+
+        top_service_country = service_country.sort_values(
+            "conversion_rate",
+            ascending=False
+        ).head(8)
+
+        fig_service = go.Figure(
+            go.Bar(
+                x=top_service_country["conversion_rate"],
+                y=(
+                    top_service_country["country"]
+                    + " • "
+                    + top_service_country["service_type"]
+                )[::-1],
+                orientation="h",
+                text=[
+                    percent(value)
+                    for value in top_service_country["conversion_rate"][::-1]
+                ],
+                textposition="outside",
+                marker=dict(
+                    color=top_service_country["conversion_rate"][::-1],
+                    colorscale=[
+                        [0, PURPLE_DEEP],
+                        [0.5, PURPLE],
+                        [1, GREEN]
+                    ]
+                ),
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Conversion Rate: %{x:.1f}%"
+                    "<extra></extra>"
+                )
+            )
+        )
+
+        fig_service = apply_dark_chart_layout(fig_service, height=210)
+        fig_service.update_layout(showlegend=False)
+        fig_service.update_xaxes(title="Conversion Rate (%)")
+
+        st.plotly_chart(
+            fig_service,
+            use_container_width=True,
+            key="sales_service_country",
+            config={"displayModeBar": False}
+        )
+
+        render_html("</div>")
+
+    # ============================================================
+    # PRIORITY LEADS TABLE
+    # ============================================================
+    render_html("""
+    <div class="sales-chart-card">
+        <div class="sales-chart-title">Priority Leads to Contact</div>
+        <div class="sales-chart-sub">
+            Open leads ranked by conversion probability, lead quality, and IIS/web behaviour evidence.
+        </div>
+    """)
+
+    if likely_to_convert.empty:
+        st.info("No high-priority open leads match the current filters.")
+
+    else:
+        display = likely_to_convert.head(8).copy()
+
+        display["Suggested Action"] = display.apply(
+            lambda row:
+                "Immediate call required"
+                if (
+                    row["conversion_probability"] >= 0.75
+                    or row["contract_confirmation_count"] > 0
+                )
+                else "Book demo follow-up"
+                if (
+                    row["demo_request_count"] > 0
+                    or row["high_intent_hits"] > 1
+                )
+                else "Nurture via email",
+            axis=1
+        )
+
+        display["Conversion Probability"] = display[
+            "conversion_probability"
+        ].apply(
+            lambda x: f"{x * 100:.1f}%"
+        )
+
+        display["Forecast Revenue"] = display[
+            "forecast_revenue"
+        ].apply(compact_money)
+
+        display["Weighted Value"] = display[
+            "weighted_value"
+        ].apply(compact_money)
+
+        display = display[
+            [
+                "client_id",
+                "country",
+                "service_type",
+                "sales_rep_name",
+                "current_stage",
+                "lead_score",
+                "Conversion Probability",
+                "web_visit_count",
+                "high_intent_hits",
+                "demo_request_count",
+                "contract_confirmation_count",
+                "top_page",
+                "Forecast Revenue",
+                "Weighted Value",
+                "Suggested Action"
+            ]
+        ].rename(
+            columns={
+                "client_id": "Client",
+                "country": "Country",
+                "service_type": "Service",
+                "sales_rep_name": "Owner",
+                "current_stage": "Stage",
+                "lead_score": "Lead Score",
+                "web_visit_count": "Web Visits",
+                "high_intent_hits": "High-Intent Hits",
+                "demo_request_count": "Demo Requests",
+                "contract_confirmation_count": "Contract Confirms",
+                "top_page": "Top Page"
+            }
+        )
+
+        render_dark_sales_table(display)
+
+    render_html("</div>")

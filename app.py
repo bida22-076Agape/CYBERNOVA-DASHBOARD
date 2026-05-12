@@ -1,0 +1,1266 @@
+import streamlit as st
+import pandas as pd
+import time
+import requests
+import importlib
+from datetime import datetime
+from textwrap import dedent
+from helpers import load_data
+
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+st.set_page_config(
+    page_title="CyberNova Intelligence Portal",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+
+# ============================================================
+# HTML RENDER HELPER
+# ============================================================
+def render_html(markup: str):
+    st.markdown(dedent(markup).strip(), unsafe_allow_html=True)
+
+
+# ============================================================
+# LIVE API SETTINGS
+# ============================================================
+API_URL = "http://127.0.0.1:5001/live-data"
+LIVE_REFRESH_SECONDS = 6
+
+
+# ============================================================
+# DEMO USERS
+# Prototype note:
+# In a real production system, users would be stored in a secure
+# database with hashed passwords and role-based access controls.
+# ============================================================
+USERS = {
+    "executive@cybernova.com": {
+        "password": "exec123",
+        "name": "Executive User",
+        "role": "Executive"
+    },
+    "sales@cybernova.com": {
+        "password": "sales123",
+        "name": "Sales User",
+        "role": "Sales"
+    },
+    "marketing@cybernova.com": {
+        "password": "market123",
+        "name": "Marketing User",
+        "role": "Marketing"
+    },
+    "admin@cybernova.com": {
+        "password": "admin123",
+        "name": "Admin User",
+        "role": "Admin"
+    }
+}
+
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+def initialise_session_state():
+    defaults = {
+        "logged_in": False,
+        "user_role": None,
+        "user_name": None,
+        "user_email": None,
+        "active_page": "Overview",
+
+        # Live dashboard state
+        "live_mode": True,
+        "last_live_refresh": 0,
+        "live_data": None,
+        "live_timestamp": None,
+        "live_error": None,
+        "new_records_added": 0,
+        "iis_logs_added": 0,
+        "total_live_records": 0
+    }
+
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+initialise_session_state()
+
+
+# ============================================================
+# GENERAL CALCULATION HELPERS
+# ============================================================
+def money(value):
+    try:
+        return f"BWP {float(value):,.0f}"
+    except Exception:
+        return "BWP 0"
+
+
+def money_short(value):
+    try:
+        value = float(value)
+
+        if abs(value) >= 1_000_000:
+            return f"BWP {value / 1_000_000:.1f}M"
+
+        if abs(value) >= 1_000:
+            return f"BWP {value / 1_000:.1f}K"
+
+        return f"BWP {value:,.0f}"
+
+    except Exception:
+        return "BWP 0"
+
+
+def percent(value):
+    try:
+        return f"{float(value):.1f}%"
+    except Exception:
+        return "0.0%"
+
+
+def safe_rate(numerator, denominator):
+    try:
+        if float(denominator) == 0:
+            return 0.0
+
+        return float(numerator) / float(denominator) * 100
+
+    except Exception:
+        return 0.0
+
+
+def month_delta(df, value_col, date_col="inquiry_date"):
+    """
+    Calculates the latest month value, previous month value, and percentage change.
+    This gives the dashboard a business pulse instead of static KPIs.
+    """
+    if df.empty or value_col not in df.columns or date_col not in df.columns:
+        return 0.0, 0.0, 0.0
+
+    temp = df[[date_col, value_col]].copy()
+    temp[date_col] = pd.to_datetime(temp[date_col], errors="coerce")
+    temp[value_col] = pd.to_numeric(temp[value_col], errors="coerce").fillna(0)
+    temp = temp.dropna(subset=[date_col])
+
+    if temp.empty:
+        return 0.0, 0.0, 0.0
+
+    temp["month"] = temp[date_col].dt.to_period("M").astype(str)
+
+    monthly = (
+        temp.groupby("month")[value_col]
+        .sum()
+        .sort_index()
+    )
+
+    if len(monthly) == 0:
+        return 0.0, 0.0, 0.0
+
+    current_value = float(monthly.iloc[-1])
+    previous_value = float(monthly.iloc[-2]) if len(monthly) > 1 else 0.0
+
+    if previous_value == 0:
+        delta = 0.0
+    else:
+        delta = ((current_value - previous_value) / previous_value) * 100
+
+    return current_value, previous_value, delta
+
+
+def web_active_mask(df):
+    """
+    Identifies leads that have meaningful IIS/web behaviour.
+    This links website activity to sales and marketing outcomes.
+    """
+    web_columns = [
+        "web_visit_count",
+        "total_web_events",
+        "total_web_requests",
+        "unique_sessions",
+        "demo_request_count",
+        "ai_assistant_request_count",
+        "promotional_event_count",
+        "contract_confirmation_count",
+        "proposal_download_count",
+        "high_intent_hits"
+    ]
+
+    mask = pd.Series(False, index=df.index)
+
+    for col in web_columns:
+        if col in df.columns:
+            mask = mask | (pd.to_numeric(df[col], errors="coerce").fillna(0) > 0)
+
+    return mask
+
+
+def calculate_sales_velocity_days(df):
+    """
+    Measures how fast converted leads move from inquiry to close.
+    This is a more intelligent KPI than just counting revenue.
+    """
+    if "inquiry_date" not in df.columns or "close_date" not in df.columns:
+        return None
+
+    if "converted" not in df.columns:
+        return None
+
+    temp = df[df["converted"] == 1].copy()
+
+    if temp.empty:
+        return None
+
+    temp["inquiry_date"] = pd.to_datetime(temp["inquiry_date"], errors="coerce")
+    temp["close_date"] = pd.to_datetime(temp["close_date"], errors="coerce")
+
+    temp = temp.dropna(subset=["inquiry_date", "close_date"])
+
+    if temp.empty:
+        return None
+
+    temp["days_to_close"] = (temp["close_date"] - temp["inquiry_date"]).dt.days
+    temp = temp[temp["days_to_close"] >= 0]
+
+    if temp.empty:
+        return None
+
+    return float(temp["days_to_close"].mean())
+
+
+# ============================================================
+# LIVE DATA CLEANING
+# ============================================================
+def clean_live_dataframe(live_df: pd.DataFrame) -> pd.DataFrame:
+    live_df = live_df.copy()
+
+    # ------------------------------------------------------------
+    # Date columns
+    # ------------------------------------------------------------
+    date_cols = [
+        "inquiry_date",
+        "close_date",
+        "demo_date",
+        "proposal_date",
+        "first_web_event",
+        "last_web_event"
+    ]
+
+    for col in date_cols:
+        if col in live_df.columns:
+            live_df[col] = pd.to_datetime(live_df[col], errors="coerce")
+
+    # ------------------------------------------------------------
+    # Column compatibility
+    # ------------------------------------------------------------
+    if "service_type" not in live_df.columns and "service" in live_df.columns:
+        live_df["service_type"] = live_df["service"]
+
+    if "service" not in live_df.columns and "service_type" in live_df.columns:
+        live_df["service"] = live_df["service_type"]
+
+    # ------------------------------------------------------------
+    # Numeric columns
+    # ------------------------------------------------------------
+    numeric_cols = [
+        "actual_revenue",
+        "forecast_revenue",
+        "target_revenue",
+        "revenue_gap",
+        "converted",
+        "lead_score",
+        "intent_score",
+        "commercial_readiness_score",
+        "conversion_probability",
+
+        # IIS / web analytics columns
+        "web_visit_count",
+        "total_web_events",
+        "total_web_requests",
+        "unique_sessions",
+        "demo_request_count",
+        "ai_assistant_request_count",
+        "promotional_event_count",
+        "contract_confirmation_count",
+        "proposal_download_count",
+        "high_intent_hits",
+        "web_error_count",
+        "avg_response_time_ms",
+        "avg_response_ms",
+        "total_page_views",
+        "unique_pages_visited"
+    ]
+
+    for col in numeric_cols:
+        if col not in live_df.columns:
+            live_df[col] = 0
+
+        live_df[col] = pd.to_numeric(live_df[col], errors="coerce").fillna(0)
+
+    # ------------------------------------------------------------
+    # Normalise conversion probability
+    # ------------------------------------------------------------
+    if "conversion_probability" in live_df.columns:
+        if live_df["conversion_probability"].max() > 1:
+            live_df["conversion_probability"] = live_df["conversion_probability"] / 100
+
+        if live_df["conversion_probability"].sum() == 0 and "lead_score" in live_df.columns:
+            live_df["conversion_probability"] = (live_df["lead_score"] / 100).clip(0, 1)
+
+    # ------------------------------------------------------------
+    # Text fallback columns
+    # ------------------------------------------------------------
+    text_cols = {
+        "client_id": "Unknown",
+        "country": "Unknown",
+        "country_group": "Unknown",
+        "city": "Unknown",
+        "industry": "Unknown",
+        "service_type": "Cyber Security Service",
+        "service": "Cyber Security Service",
+        "current_stage": "Inquiry",
+        "sales_rep_name": "Unassigned",
+        "sales_team": "Unassigned",
+        "marketing_channel": "Direct",
+        "campaign_name": "Organic Visit",
+        "top_page": "No web activity"
+    }
+
+    for col, default in text_cols.items():
+        if col not in live_df.columns:
+            live_df[col] = default
+
+        live_df[col] = live_df[col].fillna(default).astype(str)
+
+    return live_df
+
+
+# ============================================================
+# LIVE API POLLING
+# ============================================================
+def get_live_data() -> bool:
+    try:
+        response = requests.get(API_URL, timeout=4)
+
+        if response.status_code != 200:
+            st.session_state.live_error = f"API returned status {response.status_code}"
+            return False
+
+        payload = response.json()
+
+        if isinstance(payload, list):
+            records = payload
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_records_added = 0
+            iis_logs_added = 0
+            total_records = len(records)
+
+        elif isinstance(payload, dict):
+            records = payload.get("data")
+
+            if records is None:
+                records = payload.get("records")
+
+            if records is None and "client_id" in payload:
+                records = [payload]
+
+            if records is None:
+                records = []
+
+            timestamp = payload.get(
+                "timestamp",
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            )
+
+            new_records_added = payload.get(
+                "new_records_added",
+                payload.get("added", 0)
+            )
+
+            iis_logs_added = payload.get("iis_logs_added", 0)
+
+            total_records = payload.get(
+                "total_records",
+                len(records)
+            )
+
+        else:
+            records = []
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_records_added = 0
+            iis_logs_added = 0
+            total_records = 0
+
+        live_df = pd.DataFrame(records)
+
+        if live_df.empty:
+            st.session_state.live_error = "API responded, but no records were returned."
+            return False
+
+        live_df = clean_live_dataframe(live_df)
+
+        st.session_state.live_data = live_df
+        st.session_state.live_timestamp = timestamp
+        st.session_state.new_records_added = new_records_added
+        st.session_state.iis_logs_added = iis_logs_added
+        st.session_state.total_live_records = total_records
+        st.session_state.live_error = None
+
+        return True
+
+    except Exception as error:
+        st.session_state.live_error = str(error)
+        return False
+
+
+def get_dashboard_data() -> pd.DataFrame:
+    if (
+        st.session_state.live_data is not None
+        and not st.session_state.live_data.empty
+    ):
+        df = st.session_state.live_data.copy()
+    else:
+        df = load_data()
+
+    df = clean_live_dataframe(df)
+    return df
+
+
+# ============================================================
+# LOGIN CSS
+# ============================================================
+render_html("""
+<style>
+    #MainMenu, footer, header {
+        visibility: hidden;
+    }
+
+    .stApp {
+        background:
+            radial-gradient(circle at 15% 85%, rgba(59, 130, 246, 0.35) 0%, transparent 40%),
+            radial-gradient(circle at 85% 25%, rgba(236, 72, 153, 0.28) 0%, transparent 45%),
+            radial-gradient(circle at 50% 10%, rgba(251, 191, 36, 0.15) 0%, transparent 35%),
+            linear-gradient(135deg, #020617 0%, #0a0a12 50%, #05050a 100%);
+        color: white;
+    }
+
+    .block-container {
+        max-width: 580px;
+        padding-top: 2.5rem;
+    }
+
+    div[data-testid="stForm"] {
+        background: rgba(15, 23, 42, 0.75) !important;
+        border: 1px solid rgba(148,163,184,0.25) !important;
+        border-radius: 28px !important;
+        padding: 42px 40px !important;
+        box-shadow: 0 40px 90px rgba(0, 0, 0, 0.6) !important;
+        backdrop-filter: blur(30px) !important;
+    }
+
+    div[data-baseweb="input"] {
+        background: rgba(255,255,255,0.06) !important;
+        border: 1px solid rgba(148,163,184,0.3) !important;
+        border-radius: 14px !important;
+    }
+
+    input {
+        color: white !important;
+    }
+
+    label {
+        color: rgba(226,232,240,0.85) !important;
+        font-weight: 600 !important;
+    }
+
+    .brand-title {
+        font-size: 42px;
+        font-weight: 900;
+        text-align: center;
+        margin-bottom: 4px;
+        letter-spacing: -2px;
+        background: linear-gradient(90deg, #ffffff, #bae6fd);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+
+    .brand-subtitle {
+        text-align: center;
+        color: rgba(148,163,184,0.9);
+        font-size: 15px;
+        margin-bottom: 32px;
+    }
+
+    .demo-box {
+        background: rgba(15,23,42,0.6);
+        border: 1px solid rgba(148,163,184,0.2);
+        border-radius: 18px;
+        padding: 18px 22px;
+        margin-top: 24px;
+    }
+
+    .prototype-note {
+        background: rgba(37, 99, 235, 0.10);
+        border: 1px solid rgba(125, 211, 252, 0.20);
+        border-radius: 16px;
+        padding: 14px 18px;
+        margin-top: 18px;
+        color: #cbd5e1;
+        font-size: 12px;
+        line-height: 1.55;
+    }
+
+    /* ============================================================
+       LOGIN BUTTON FIX
+       This fixes the blank white sign-in button.
+    ============================================================ */
+    div[data-testid="stFormSubmitButton"] button {
+        background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 45%, #7c3aed 100%) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(125, 211, 252, 0.55) !important;
+        border-radius: 16px !important;
+        min-height: 56px !important;
+        padding: 0.85rem 1.4rem !important;
+        font-weight: 900 !important;
+        font-size: 15px !important;
+        width: 100% !important;
+        box-shadow: 0 16px 35px rgba(37, 99, 235, 0.35) !important;
+        transition: all 0.2s ease-in-out !important;
+    }
+
+    div[data-testid="stFormSubmitButton"] button:hover {
+        transform: translateY(-2px) !important;
+        filter: brightness(1.08) !important;
+        box-shadow: 0 22px 45px rgba(124, 58, 237, 0.45) !important;
+    }
+
+    div[data-testid="stFormSubmitButton"] button p {
+        color: #ffffff !important;
+        font-weight: 900 !important;
+        font-size: 15px !important;
+    }
+</style>
+""")
+
+
+# ============================================================
+# DASHBOARD CSS
+# ============================================================
+def dashboard_css():
+    render_html("""
+    <style>
+        header,
+        [data-testid="stHeader"] {
+            display: none !important;
+        }
+
+        .block-container {
+            max-width: 1450px !important;
+            padding-top: 1.4rem !important;
+            padding-left: 2rem !important;
+            padding-right: 2rem !important;
+        }
+
+        section[data-testid="stSidebar"] {
+            background: rgba(2, 6, 23, 0.96);
+            border-right: 1px solid rgba(148, 163, 184, 0.18);
+        }
+
+        .overview-card {
+            background:
+                radial-gradient(circle at 85% 0%, rgba(14,165,233,0.22), transparent 42%),
+                linear-gradient(135deg, rgba(7,20,38,0.98), rgba(3,12,28,0.96));
+            border: 1px solid rgba(56,189,248,0.28);
+            border-radius: 22px;
+            padding: 22px;
+            min-height: 152px;
+            box-shadow: 0 22px 65px rgba(0,0,0,0.32);
+        }
+
+        .overview-card.web-card {
+            background:
+                radial-gradient(circle at 85% 0%, rgba(168,85,247,0.32), transparent 42%),
+                linear-gradient(135deg, rgba(35,13,70,0.98), rgba(10,15,35,0.96));
+            border: 1px solid rgba(196,181,253,0.30);
+        }
+
+        .overview-value {
+            color: #ffffff;
+            font-size: 26px;
+            font-weight: 950;
+            margin-bottom: 6px;
+            letter-spacing: -0.8px;
+        }
+
+        .overview-label {
+            color: #7dd3fc;
+            font-size: 12px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.9px;
+        }
+
+        .overview-story {
+            color: #94a3b8;
+            font-size: 12px;
+            margin-top: 9px;
+            line-height: 1.45;
+        }
+
+        .overview-delta {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 5px 9px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 850;
+            background: rgba(34,197,94,0.12);
+            color: #bbf7d0;
+            border: 1px solid rgba(34,197,94,0.22);
+        }
+
+        .overview-delta.down {
+            background: rgba(239,68,68,0.12);
+            color: #fecaca;
+            border: 1px solid rgba(239,68,68,0.24);
+        }
+
+        .overview-delta.neutral {
+            background: rgba(148,163,184,0.13);
+            color: #cbd5e1;
+            border: 1px solid rgba(148,163,184,0.24);
+        }
+
+        .insight-card {
+            margin-top: 20px;
+            margin-bottom: 12px;
+            background:
+                radial-gradient(circle at 90% 0%, rgba(45, 212, 191, 0.18), transparent 35%),
+                linear-gradient(135deg, rgba(15,23,42,0.92), rgba(30,27,75,0.82));
+            border: 1px solid rgba(125,211,252,0.18);
+            border-radius: 20px;
+            padding: 18px 22px;
+            color: #cbd5e1;
+            font-size: 13px;
+            line-height: 1.65;
+            box-shadow: 0 16px 40px rgba(0,0,0,0.24);
+        }
+
+        .insight-card b {
+            color: #ffffff;
+        }
+
+        .insight-card .highlight {
+            color: #7dd3fc;
+            font-weight: 900;
+        }
+
+        .overview-section-title {
+            color: #e2e8f0;
+            font-size: 16px;
+            font-weight: 900;
+            margin: 18px 0 10px 0;
+        }
+
+        div.stButton > button {
+            background:
+                radial-gradient(circle at 90% 0%, rgba(125,211,252,0.28), transparent 35%),
+                linear-gradient(135deg, #0f172a 0%, #0369a1 55%, #1d4ed8 100%) !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(125,211,252,0.70) !important;
+            border-radius: 18px !important;
+            padding: 0.95rem 1.25rem !important;
+            font-size: 16px !important;
+            font-weight: 900 !important;
+            box-shadow: 0 18px 45px rgba(0,0,0,0.35) !important;
+            transition: all 0.18s ease-in-out !important;
+        }
+
+        div.stButton > button:hover {
+            background:
+                radial-gradient(circle at 90% 0%, rgba(186,230,253,0.35), transparent 35%),
+                linear-gradient(135deg, #082f49 0%, #0284c7 55%, #2563eb 100%) !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(186,230,253,0.95) !important;
+            transform: translateY(-2px);
+            box-shadow: 0 22px 55px rgba(14,165,233,0.25) !important;
+        }
+
+        div.stButton > button:focus,
+        div.stButton > button:active {
+            background:
+                linear-gradient(135deg, #082f49 0%, #0284c7 55%, #2563eb 100%) !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(186,230,253,0.95) !important;
+            outline: none !important;
+            box-shadow: 0 22px 55px rgba(14,165,233,0.25) !important;
+        }
+
+        div.stButton > button p {
+            color: #ffffff !important;
+            font-size: 16px !important;
+            font-weight: 900 !important;
+        }
+
+        .topbar-shell {
+            background:
+                radial-gradient(circle at 90% 0%, rgba(124,58,237,0.18), transparent 34%),
+                linear-gradient(135deg, #1e2937, #111827);
+            padding: 18px 24px;
+            border-radius: 20px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 18px;
+            border: 1px solid rgba(148,163,184,0.14);
+            box-shadow: 0 14px 35px rgba(0,0,0,0.20);
+        }
+
+        .topbar-title {
+            margin: 0;
+            color: white;
+            font-size: 30px;
+            font-weight: 900;
+        }
+
+        .topbar-subtitle {
+            margin: 0;
+            color: #a5b4fc;
+            font-size: 13px;
+        }
+
+        .topbar-right {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .live-pill {
+            padding: 8px 14px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .live-pill-on {
+            background: rgba(34,197,94,0.14);
+            border: 1px solid rgba(34,197,94,0.35);
+            color: #bbf7d0;
+        }
+
+        .live-pill-error {
+            background: rgba(239,68,68,0.14);
+            border: 1px solid rgba(239,68,68,0.35);
+            color: #fecaca;
+        }
+
+        .live-pill-static {
+            background: rgba(100,116,139,0.18);
+            border: 1px solid rgba(148,163,184,0.30);
+            color: #cbd5e1;
+        }
+
+        .user-pill {
+            background: #334155;
+            padding: 10px 18px;
+            border-radius: 999px;
+            color: white;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .role-pill {
+            background: #ef4444;
+            padding: 4px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+
+        @media (max-width: 900px) {
+            .topbar-shell {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .topbar-right {
+                justify-content: flex-start;
+            }
+        }
+    </style>
+    """)
+
+
+# ============================================================
+# PAGE NAVIGATION HELPERS
+# ============================================================
+def switch_page(page_name):
+    st.session_state.active_page = page_name
+
+
+def get_allowed_pages():
+    """
+    Role-based access structure.
+
+    Executive/Admin:
+        Access everything.
+
+    Sales:
+        Overview + Sales + Web Analytics.
+
+    Marketing:
+        Overview + Marketing + Web Analytics.
+    """
+    pages_by_role = {
+        "Admin": ["Overview", "Executive", "Sales", "Marketing", "Web Analytics"],
+        "Executive": ["Overview", "Executive", "Sales", "Marketing", "Web Analytics"],
+        "Sales": ["Overview", "Sales", "Web Analytics"],
+        "Marketing": ["Overview", "Marketing", "Web Analytics"]
+    }
+
+    return pages_by_role.get(st.session_state.user_role, ["Overview"])
+
+
+def get_page_title(page_name):
+    page_titles = {
+        "Overview": "Overview Analytics",
+        "Executive": "Executive Analytics",
+        "Sales": "Sales Performance",
+        "Marketing": "Marketing Intelligence",
+        "Web Analytics": "Web Analytics & IIS Logs"
+    }
+
+    return page_titles.get(page_name, f"{page_name} Analytics")
+
+
+def get_page_subtitle(page_name):
+    page_subtitles = {
+        "Overview": "Strategic web-to-sales intelligence overview",
+        "Executive": "Strategic revenue, forecasting, and executive decision support",
+        "Sales": "Sales velocity, high-intent leads, and revenue prioritisation",
+        "Marketing": "Campaign performance, segmentation, and web-to-contract conversion",
+        "Web Analytics": "IIS web server log analysis linked to sales and marketing performance"
+    }
+
+    return page_subtitles.get(page_name, "Data analytics and strategic business insights")
+
+
+def clean_overview_data(df):
+    df = clean_live_dataframe(df)
+    return df
+
+
+# ============================================================
+# LOGIN / LOGOUT
+# ============================================================
+def login_user(email, password):
+    email = email.strip().lower()
+
+    if email in USERS and USERS[email]["password"] == password:
+        st.session_state.logged_in = True
+        st.session_state.user_name = USERS[email]["name"]
+        st.session_state.user_role = USERS[email]["role"]
+        st.session_state.user_email = email
+        st.session_state.active_page = "Overview"
+
+        st.session_state.last_live_refresh = 0
+        st.session_state.live_data = None
+        st.session_state.live_timestamp = None
+        st.session_state.live_error = None
+        st.session_state.new_records_added = 0
+        st.session_state.iis_logs_added = 0
+        st.session_state.total_live_records = 0
+
+        st.rerun()
+    else:
+        st.error("Invalid email or password. Use the demo credentials below.")
+
+
+def logout_user():
+    st.session_state.logged_in = False
+    st.session_state.user_role = None
+    st.session_state.user_name = None
+    st.session_state.user_email = None
+    st.session_state.active_page = "Overview"
+
+    st.session_state.live_data = None
+    st.session_state.live_timestamp = None
+    st.session_state.live_error = None
+    st.session_state.new_records_added = 0
+    st.session_state.iis_logs_added = 0
+    st.session_state.total_live_records = 0
+    st.session_state.last_live_refresh = 0
+
+    st.rerun()
+
+
+# ============================================================
+# OVERVIEW PAGE
+# ============================================================
+def show_overview(df):
+    df = clean_overview_data(df)
+    allowed_pages = get_allowed_pages()
+
+    total_revenue = df["actual_revenue"].sum()
+    total_leads = len(df)
+    won_deals = int(df["converted"].sum())
+    conversion_rate = safe_rate(won_deals, total_leads)
+
+    open_leads = df[df["converted"] == 0].copy()
+
+    if not open_leads.empty:
+        forecasted_value = (
+            open_leads["forecast_revenue"] *
+            open_leads["conversion_probability"]
+        ).sum()
+    else:
+        forecasted_value = 0
+
+    web_mask = web_active_mask(df)
+    web_active_leads = int(web_mask.sum())
+    web_influenced_revenue = df.loc[web_mask, "actual_revenue"].sum()
+    web_revenue_share = safe_rate(web_influenced_revenue, total_revenue)
+
+    _, _, revenue_delta = month_delta(df, "actual_revenue")
+    _, _, lead_delta = month_delta(df, "client_id") if "client_id" in df.columns else (0, 0, 0)
+
+    high_intent_hits = int(df["high_intent_hits"].sum()) if "high_intent_hits" in df.columns else 0
+    demo_requests = int(df["demo_request_count"].sum()) if "demo_request_count" in df.columns else 0
+    contract_signals = int(df["contract_confirmation_count"].sum()) if "contract_confirmation_count" in df.columns else 0
+
+    sales_velocity_days = calculate_sales_velocity_days(df)
+
+    if sales_velocity_days is None:
+        sales_velocity_text = "Not enough close-date evidence yet"
+    else:
+        sales_velocity_text = f"Average lead-to-close speed is {sales_velocity_days:.0f} days"
+
+    if revenue_delta > 0:
+        revenue_delta_class = "overview-delta"
+        revenue_delta_text = f"↑ {percent(revenue_delta)} vs previous month"
+    elif revenue_delta < 0:
+        revenue_delta_class = "overview-delta down"
+        revenue_delta_text = f"↓ {percent(abs(revenue_delta))} vs previous month"
+    else:
+        revenue_delta_class = "overview-delta neutral"
+        revenue_delta_text = "No previous-month movement yet"
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    with c1:
+        render_html(f"""
+        <div class="overview-card">
+            <div class="overview-label">Total Revenue</div>
+            <div class="overview-value">{money_short(total_revenue)}</div>
+            <div class="overview-story">Closed revenue currently visible in the system.</div>
+            <span class="{revenue_delta_class}">{revenue_delta_text}</span>
+        </div>
+        """)
+
+    with c2:
+        render_html(f"""
+        <div class="overview-card">
+            <div class="overview-label">Total Leads</div>
+            <div class="overview-value">{total_leads:,}</div>
+            <div class="overview-story">All available client opportunities.</div>
+            <span class="overview-delta neutral">Pipeline base</span>
+        </div>
+        """)
+
+    with c3:
+        render_html(f"""
+        <div class="overview-card">
+            <div class="overview-label">Conversion Rate</div>
+            <div class="overview-value">{percent(conversion_rate)}</div>
+            <div class="overview-story">{won_deals:,} converted deals from {total_leads:,} leads.</div>
+            <span class="overview-delta">Revenue efficiency</span>
+        </div>
+        """)
+
+    with c4:
+        render_html(f"""
+        <div class="overview-card">
+            <div class="overview-label">Weighted Forecast</div>
+            <div class="overview-value">{money_short(forecasted_value)}</div>
+            <div class="overview-story">Forecasted value adjusted by conversion probability.</div>
+            <span class="overview-delta">Forward-looking KPI</span>
+        </div>
+        """)
+
+    with c5:
+        render_html(f"""
+        <div class="overview-card web-card">
+            <div class="overview-label">Web-Influenced Revenue</div>
+            <div class="overview-value">{money_short(web_influenced_revenue)}</div>
+            <div class="overview-story">{web_active_leads:,} leads show website activity.</div>
+            <span class="overview-delta">{percent(web_revenue_share)} of closed revenue</span>
+        </div>
+        """)
+
+    render_html(f"""
+    <div class="insight-card">
+        <b>Executive summary:</b>
+        CyberNova has converted <span class="highlight">{percent(conversion_rate)}</span>
+        of its visible pipeline, with <span class="highlight">{money_short(web_influenced_revenue)}</span>
+        linked to web-active leads. The strongest intelligence signal is the web-to-sales pathway:
+        <span class="highlight">{high_intent_hits:,}</span> high-intent website actions,
+        <span class="highlight">{demo_requests:,}</span> demo requests, and
+        <span class="highlight">{contract_signals:,}</span> contract confirmation signals.
+        {sales_velocity_text}. To improve revenue performance, users should prioritise high-intent web leads
+        before low-engagement pipeline records.
+    </div>
+    """)
+
+    render_html('<div class="overview-section-title">Open Role-Based Dashboards</div>')
+
+    dashboard_buttons = []
+
+    if "Executive" in allowed_pages:
+        dashboard_buttons.append(("◈ Executive Analytics", "Executive", "overview_executive_button"))
+
+    if "Sales" in allowed_pages:
+        dashboard_buttons.append(("▤ Sales Performance & Leads", "Sales", "overview_sales_button"))
+
+    if "Marketing" in allowed_pages:
+        dashboard_buttons.append(("◎ Marketing Intelligence", "Marketing", "overview_marketing_button"))
+
+    if "Web Analytics" in allowed_pages:
+        dashboard_buttons.append(("◌ Web Analytics & IIS Logs", "Web Analytics", "overview_web_analytics_button"))
+
+    if dashboard_buttons:
+        cols = st.columns(len(dashboard_buttons))
+
+        for col, (label, page_name, key) in zip(cols, dashboard_buttons):
+            with col:
+                st.button(
+                    label,
+                    key=key,
+                    use_container_width=True,
+                    on_click=switch_page,
+                    args=(page_name,)
+                )
+
+    # Important:
+    # The Overview page ends here. It must not render Executive/Sales/Marketing content below it.
+    return
+
+
+# ============================================================
+# PAGE RENDERING
+# ============================================================
+def render_external_page(module_name, df, friendly_name):
+    try:
+        page_module = importlib.import_module(module_name)
+
+        if hasattr(page_module, "show"):
+            page_module.show(df)
+        else:
+            st.error(f"{friendly_name} opened, but it does not have a show(df) function.")
+
+    except ModuleNotFoundError:
+        st.error(
+            f"{friendly_name} page could not be opened because {module_name}.py was not found. "
+            f"Make sure the file is inside the correct pages folder."
+        )
+
+    except Exception as error:
+        st.error(f"{friendly_name} page opened but crashed.")
+        st.exception(error)
+
+
+# ============================================================
+# LOGGED-IN DASHBOARD
+# ============================================================
+if st.session_state.logged_in:
+    dashboard_css()
+
+    current_time = time.time()
+
+    should_poll_live_api = (
+        st.session_state.live_mode
+        and (
+            st.session_state.live_data is None
+            or current_time - st.session_state.last_live_refresh >= LIVE_REFRESH_SECONDS
+        )
+    )
+
+    if should_poll_live_api:
+        get_live_data()
+        st.session_state.last_live_refresh = current_time
+
+    df = get_dashboard_data()
+    allowed_pages = get_allowed_pages()
+
+    if st.session_state.active_page not in allowed_pages:
+        st.session_state.active_page = "Overview"
+
+    with st.sidebar:
+        st.markdown("### 🛡️ CyberNova")
+        st.caption("Role-based Intelligence Portal")
+        st.write("")
+
+        nav_labels = {
+            "Overview": "▦ Overview",
+            "Executive": "◈ Executive Analytics",
+            "Sales": "▤ Sales Performance",
+            "Marketing": "◎ Marketing Intelligence",
+            "Web Analytics": "◌ Web Analytics & IIS Logs"
+        }
+
+        for page in allowed_pages:
+            label = nav_labels.get(page, page)
+
+            if page == st.session_state.active_page:
+                label = f"● {label}"
+
+            safe_key = page.lower().replace(" ", "_").replace("&", "and")
+
+            st.button(
+                label,
+                key=f"sidebar_nav_{safe_key}",
+                use_container_width=True,
+                on_click=switch_page,
+                args=(page,)
+            )
+
+        st.write("")
+
+        if st.button("🚪 Log out", use_container_width=True):
+            logout_user()
+
+    # ------------------------------------------------------------
+    # Live status pill
+    # ------------------------------------------------------------
+    has_live_data = (
+        st.session_state.live_data is not None
+        and not st.session_state.live_data.empty
+    )
+
+    if st.session_state.live_timestamp:
+        live_pill_text = f"Live • {st.session_state.live_timestamp}"
+        live_pill_class = "live-pill live-pill-on"
+
+    elif has_live_data:
+        live_pill_text = "Live • Updating..."
+        live_pill_class = "live-pill live-pill-on"
+
+    elif st.session_state.live_error:
+        live_pill_text = "API Offline"
+        live_pill_class = "live-pill live-pill-error"
+
+    else:
+        live_pill_text = "Static Data"
+        live_pill_class = "live-pill live-pill-static"
+
+    page_title = get_page_title(st.session_state.active_page)
+    page_subtitle = get_page_subtitle(st.session_state.active_page)
+
+    topbar_html = (
+        f'<div class="topbar-shell">'
+        f'<div>'
+        f'<h1 class="topbar-title">{page_title}</h1>'
+        f'<p class="topbar-subtitle">{page_subtitle}</p>'
+        f'</div>'
+        f'<div class="topbar-right">'
+        f'<span class="{live_pill_class}">{live_pill_text}</span>'
+        f'<div class="user-pill">{st.session_state.user_name}'
+        f'<span class="role-pill">{st.session_state.user_role}</span>'
+        f'</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+    st.markdown(topbar_html, unsafe_allow_html=True)
+
+    # ------------------------------------------------------------
+    # Page routing
+    # ------------------------------------------------------------
+    if st.session_state.active_page == "Overview":
+        show_overview(df)
+
+    elif st.session_state.active_page == "Executive":
+        render_external_page("pages.executive", df, "Executive Analytics")
+
+    elif st.session_state.active_page == "Sales":
+        render_external_page("pages.sales", df, "Sales Performance")
+
+    elif st.session_state.active_page == "Marketing":
+        render_external_page("pages.market", df, "Marketing Intelligence")
+
+    elif st.session_state.active_page == "Web Analytics":
+        render_external_page("pages.web_analytics", df, "Web Analytics & IIS Logs")
+
+    else:
+        st.session_state.active_page = "Overview"
+        st.rerun()
+
+    # Keep API feeding the dashboard.
+    if st.session_state.live_mode:
+        time.sleep(LIVE_REFRESH_SECONDS)
+        st.rerun()
+
+    st.stop()
+
+
+# ============================================================
+# LOGIN PAGE
+# ============================================================
+render_html("""
+<div class="brand-title">CyberNova</div>
+<div class="brand-subtitle">AI-Powered Web-to-Sales Intelligence Portal</div>
+""")
+
+with st.form("login_form"):
+    st.markdown("### Welcome back")
+    st.caption("Sign in to access your role-based insights")
+
+    email = st.text_input(
+        "Email address",
+        placeholder="executive@cybernova.com"
+    )
+
+    password = st.text_input(
+        "Password",
+        placeholder="Enter your password",
+        type="password"
+    )
+
+    if st.form_submit_button("Sign in to dashboard"):
+        login_user(email, password)
+
+render_html("""
+<div class="demo-box">
+    <p><b>Demo accounts</b></p>
+    <p>Executive → executive@cybernova.com / exec123</p>
+    <p>Sales → sales@cybernova.com / sales123</p>
+    <p>Marketing → marketing@cybernova.com / market123</p>
+    <p>Admin → admin@cybernova.com / admin123</p>
+</div>
+""")
+
+render_html("""
+<div class="prototype-note">
+    <b>Prototype note:</b>
+    These are demo credentials for testing role-based access.
+    In a production system, user accounts would be stored in a secure database,
+    passwords would be hashed, and access permissions would be managed through
+    proper role-based access control.
+</div>
+""")
+
+render_html("""
+<p style="text-align:center; color:#64748b; font-size:12px; margin-top:28px;">
+    This is a prototype for CET333 Product Development • University of Sunderland
+</p>
+""")

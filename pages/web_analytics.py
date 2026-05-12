@@ -1,0 +1,1621 @@
+"""
+pages/web_analytics.py
+
+CyberNova Web Analytics & IIS Logs Dashboard
+
+Purpose:
+- Shows IIS-style website behaviour.
+- Links web activity to sales and revenue outcomes.
+- Gives evidence that the dashboard is not only a CRM, but a web-to-sales BI tool.
+"""
+
+import html
+from datetime import timedelta
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+import plotly.graph_objects as go
+
+from helpers import (
+    clean_dashboard_data,
+    money_short,
+    percent,
+    safe_rate,
+    web_active_mask,
+    add_stage_flags,
+)
+
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+PURPLE = "#7c3aed"
+PURPLE_BRIGHT = "#a855f7"
+PURPLE_SOFT = "#c4b5fd"
+CYAN = "#7ef9d6"
+GREEN = "#22c55e"
+RED = "#ef4444"
+AMBER = "#f59e0b"
+BLUE = "#3b82f6"
+
+TEXT_LIGHT = "#f8fafc"
+TEXT_MUTED = "#94a3b8"
+CARD_BG = "rgba(13, 10, 28, 0.94)"
+CARD_BG_2 = "rgba(28, 18, 55, 0.86)"
+CARD_BORDER = "rgba(168, 85, 247, 0.24)"
+
+
+# =============================================================================
+# BASIC HTML RENDERER
+# =============================================================================
+def render_html(markup: str) -> None:
+    st.markdown(markup, unsafe_allow_html=True)
+
+
+# =============================================================================
+# PAGE CSS
+# =============================================================================
+def web_css() -> None:
+    st.markdown(
+        """
+        <style>
+            /* ------------------------------------------------------------
+               Page text
+            ------------------------------------------------------------ */
+            .web-title {
+                color: #f8fafc;
+                font-size: 30px;
+                font-weight: 950;
+                letter-spacing: -0.7px;
+                margin: 6px 0 4px 0;
+            }
+
+            .web-subtitle {
+                color: #a5b4fc;
+                font-size: 13px;
+                margin-bottom: 18px;
+            }
+
+            .web-section-label {
+                color: #f8fafc;
+                font-size: 15px;
+                font-weight: 900;
+                margin: 20px 0 10px 0;
+            }
+
+            .web-small-label {
+                color: #8f96b5;
+                font-size: 11px;
+                font-weight: 900;
+                text-transform: uppercase;
+                letter-spacing: 0.8px;
+                margin: 8px 0 6px 0;
+            }
+
+            .web-period-pill {
+                background: rgba(124, 58, 237, 0.14);
+                border: 1px solid rgba(168, 85, 247, 0.25);
+                color: #c4b5fd;
+                padding: 9px 14px;
+                border-radius: 14px;
+                font-size: 11px;
+                font-weight: 850;
+                margin: 8px 0 16px 0;
+            }
+
+            /* ------------------------------------------------------------
+               Buttons
+            ------------------------------------------------------------ */
+            div.stButton > button {
+                background: linear-gradient(135deg, #0f4c81 0%, #2563eb 100%) !important;
+                color: white !important;
+                border: 1px solid rgba(125, 211, 252, 0.35) !important;
+                border-radius: 16px !important;
+                padding: 12px 18px !important;
+                font-weight: 900 !important;
+                min-height: 48px !important;
+                box-shadow: 0 14px 30px rgba(0,0,0,0.25) !important;
+            }
+
+            div.stButton > button:hover {
+                transform: translateY(-1px);
+                border-color: rgba(196, 181, 253, 0.65) !important;
+            }
+
+            /* ------------------------------------------------------------
+               Filters
+            ------------------------------------------------------------ */
+            div[data-baseweb="select"] > div {
+                background-color: rgba(15, 10, 34, 0.96) !important;
+                border: 1px solid rgba(168, 85, 247, 0.30) !important;
+                border-radius: 12px !important;
+                color: #f8fafc !important;
+                min-height: 42px !important;
+            }
+
+            div[data-baseweb="select"] span {
+                color: #f8fafc !important;
+            }
+
+            div[data-baseweb="input"] input {
+                color: #f8fafc !important;
+            }
+
+            div[data-baseweb="input"] {
+                background-color: rgba(15, 10, 34, 0.96) !important;
+                border-radius: 12px !important;
+            }
+
+
+            /* ------------------------------------------------------------
+               Date input visibility
+            ------------------------------------------------------------ */
+            div[data-testid="stDateInput"] label {
+                color: #cbd5e1 !important;
+                font-weight: 800 !important;
+            }
+
+            div[data-testid="stDateInput"] div[data-baseweb="input"] {
+                background: rgba(15, 10, 34, 0.96) !important;
+                border: 1px solid rgba(168, 85, 247, 0.34) !important;
+                border-radius: 12px !important;
+            }
+
+            div[data-testid="stDateInput"] input {
+                color: #f8fafc !important;
+                -webkit-text-fill-color: #f8fafc !important;
+                background: transparent !important;
+                opacity: 1 !important;
+            }
+
+            div[data-testid="stDateInput"] input::placeholder {
+                color: #e2e8f0 !important;
+                -webkit-text-fill-color: #e2e8f0 !important;
+                opacity: 1 !important;
+            }
+
+            div[data-baseweb="popover"] {
+                z-index: 999999 !important;
+            }
+
+            label {
+                color: #cbd5e1 !important;
+                font-weight: 800 !important;
+                font-size: 12px !important;
+            }
+
+            /* ------------------------------------------------------------
+               KPI cards
+            ------------------------------------------------------------ */
+            .web-kpi-card {
+                background:
+                    radial-gradient(circle at 85% 0%, rgba(124,58,237,0.28), transparent 42%),
+                    rgba(13, 10, 28, 0.94);
+                border: 1px solid rgba(168, 85, 247, 0.24);
+                border-radius: 18px;
+                padding: 15px 16px;
+                min-height: 125px;
+                box-shadow: 0 18px 45px rgba(0,0,0,0.28);
+            }
+
+            .web-kpi-card.featured {
+                background:
+                    radial-gradient(circle at 80% 80%, rgba(196,181,253,0.28), transparent 34%),
+                    linear-gradient(135deg, #2e1065 0%, #5b05ff 45%, #a855f7 100%);
+                border: 1px solid rgba(196, 181, 253, 0.38);
+            }
+
+            .web-kpi-label {
+                color: #c4b5fd;
+                font-size: 10px;
+                font-weight: 950;
+                text-transform: uppercase;
+                letter-spacing: 0.6px;
+                margin-bottom: 8px;
+            }
+
+            .web-kpi-value {
+                color: #ffffff;
+                font-size: 22px;
+                font-weight: 950;
+                letter-spacing: -0.4px;
+                margin-bottom: 8px;
+                line-height: 1.15;
+            }
+
+            .web-kpi-note {
+                color: #94a3b8;
+                font-size: 10.5px;
+                line-height: 1.35;
+                margin-top: 7px;
+            }
+
+            .web-delta {
+                display: inline-flex;
+                align-items: center;
+                border-radius: 999px;
+                padding: 3px 8px;
+                font-size: 10px;
+                font-weight: 900;
+                border: 1px solid transparent;
+            }
+
+            .web-delta.good {
+                color: #bbf7d0;
+                background: rgba(34, 197, 94, 0.14);
+                border-color: rgba(34, 197, 94, 0.25);
+            }
+
+            .web-delta.bad {
+                color: #fecaca;
+                background: rgba(239, 68, 68, 0.14);
+                border-color: rgba(239, 68, 68, 0.25);
+            }
+
+            .web-delta.neutral {
+                color: #ddd6fe;
+                background: rgba(196, 181, 253, 0.14);
+                border-color: rgba(196, 181, 253, 0.25);
+            }
+
+            /* ------------------------------------------------------------
+               Insight box
+            ------------------------------------------------------------ */
+            .web-insight-box {
+                background:
+                    radial-gradient(circle at 90% 0%, rgba(124,58,237,0.20), transparent 45%),
+                    rgba(13, 10, 28, 0.94);
+                border: 1px solid rgba(168, 85, 247, 0.24);
+                border-radius: 18px;
+                padding: 15px 18px;
+                color: #cbd5e1;
+                font-size: 13px;
+                line-height: 1.55;
+                margin: 14px 0 18px 0;
+                box-shadow: 0 18px 45px rgba(0,0,0,0.24);
+            }
+
+            .web-insight-box b {
+                color: #ffffff;
+            }
+
+            .web-insight-highlight {
+                color: #7ef9d6;
+                font-weight: 900;
+            }
+
+            /* ------------------------------------------------------------
+               Chart headings
+            ------------------------------------------------------------ */
+            .web-chart-heading {
+                background:
+                    radial-gradient(circle at 90% 0%, rgba(124,58,237,0.20), transparent 45%),
+                    rgba(28, 18, 55, 0.86);
+                border: 1px solid rgba(168, 85, 247, 0.24);
+                border-radius: 18px;
+                padding: 14px 16px;
+                margin: 12px 0 8px 0;
+                box-shadow: 0 14px 32px rgba(0,0,0,0.22);
+            }
+
+            .web-chart-heading h3 {
+                color: #f8fafc;
+                font-size: 16px;
+                font-weight: 900;
+                margin: 0 0 4px 0;
+            }
+
+            .web-chart-heading p {
+                color: #94a3b8;
+                font-size: 11px;
+                margin: 0;
+            }
+
+            /* ------------------------------------------------------------
+               Expansion
+            ------------------------------------------------------------ */
+            details {
+                background: rgba(15, 10, 34, 0.50) !important;
+                border: 1px solid rgba(168, 85, 247, 0.15) !important;
+                border-radius: 14px !important;
+                padding: 4px 10px !important;
+                margin-bottom: 14px !important;
+            }
+
+            summary {
+                color: #ddd6fe !important;
+                font-size: 12px !important;
+                font-weight: 850 !important;
+            }
+
+            /* ------------------------------------------------------------
+               Table
+            ------------------------------------------------------------ */
+            .web-table-wrap {
+                background:
+                    radial-gradient(circle at 90% 0%, rgba(124,58,237,0.20), transparent 45%),
+                    rgba(13, 10, 28, 0.96);
+                border: 1px solid rgba(168, 85, 247, 0.24);
+                border-radius: 18px;
+                padding: 12px;
+                margin-top: 10px;
+                box-shadow: 0 18px 45px rgba(0,0,0,0.26);
+                overflow-x: auto;
+            }
+
+            table.web-evidence-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 12px;
+                color: #cbd5e1;
+                overflow: hidden;
+                border-radius: 12px;
+            }
+
+            table.web-evidence-table thead tr {
+                background: linear-gradient(135deg, rgba(91,5,255,0.55), rgba(168,85,247,0.32));
+                color: #ffffff;
+            }
+
+            table.web-evidence-table th {
+                padding: 11px 10px;
+                text-align: left;
+                font-weight: 950;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                font-size: 10px;
+                border-bottom: 1px solid rgba(196,181,253,0.20);
+            }
+
+            table.web-evidence-table td {
+                padding: 10px;
+                border-bottom: 1px solid rgba(148, 163, 184, 0.10);
+                vertical-align: middle;
+            }
+
+            table.web-evidence-table tbody tr:nth-child(even) {
+                background: rgba(255,255,255,0.025);
+            }
+
+            table.web-evidence-table tbody tr:hover {
+                background: rgba(168, 85, 247, 0.10);
+            }
+
+            .web-badge {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 4px 8px;
+                border-radius: 999px;
+                font-size: 10px;
+                font-weight: 900;
+            }
+
+            .web-badge.yes {
+                color: #bbf7d0;
+                background: rgba(34,197,94,0.15);
+                border: 1px solid rgba(34,197,94,0.28);
+            }
+
+            .web-badge.no {
+                color: #fecaca;
+                background: rgba(239,68,68,0.15);
+                border: 1px solid rgba(239,68,68,0.28);
+            }
+
+            .web-action-hot {
+                color: #bbf7d0;
+                background: rgba(34,197,94,0.12);
+                border: 1px solid rgba(34,197,94,0.24);
+                border-radius: 999px;
+                padding: 4px 8px;
+                font-size: 10px;
+                font-weight: 900;
+            }
+
+            .web-action-review {
+                color: #fde68a;
+                background: rgba(245,158,11,0.13);
+                border: 1px solid rgba(245,158,11,0.24);
+                border-radius: 999px;
+                padding: 4px 8px;
+                font-size: 10px;
+                font-weight: 900;
+            }
+
+            .web-action-nurture {
+                color: #dbeafe;
+                background: rgba(59,130,246,0.13);
+                border: 1px solid rgba(59,130,246,0.24);
+                border-radius: 999px;
+                padding: 4px 8px;
+                font-size: 10px;
+                font-weight: 900;
+            }
+
+            .web-footer {
+                color: #6b7280;
+                text-align: center;
+                font-size: 11px;
+                margin: 26px 0 8px 0;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =============================================================================
+# DATA CLEANING
+# =============================================================================
+def ensure_web_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    text_defaults = {
+        "client_id": "Unknown",
+        "country": "Unknown",
+        "marketing_channel": "Unknown",
+        "service_type": "CyberNova Service",
+        "industry": "Unknown",
+        "current_stage": "Inquiry",
+    }
+
+    numeric_defaults = [
+        "actual_revenue",
+        "converted",
+        "web_visit_count",
+        "total_web_events",
+        "total_web_requests",
+        "unique_sessions",
+        "high_intent_hits",
+        "demo_request_count",
+        "proposal_download_count",
+        "contract_confirmation_count",
+        "ai_assistant_request_count",
+        "web_error_count",
+        "avg_response_time_ms",
+        "lead_score",
+        "conversion_probability",
+    ]
+
+    date_defaults = [
+        "inquiry_date",
+        "first_web_event",
+        "last_web_event",
+        "demo_date",
+        "proposal_date",
+        "close_date",
+    ]
+
+    if "service_type" not in df.columns and "service" in df.columns:
+        df["service_type"] = df["service"]
+
+    for col, default in text_defaults.items():
+        if col not in df.columns:
+            df[col] = default
+
+        df[col] = df[col].fillna(default).astype(str)
+
+    for col in numeric_defaults:
+        if col not in df.columns:
+            df[col] = 0
+
+        if col == "converted":
+            df[col] = (
+                df[col]
+                .replace(
+                    {
+                        True: 1,
+                        False: 0,
+                        "True": 1,
+                        "False": 0,
+                        "Yes": 1,
+                        "No": 0,
+                    }
+                )
+            )
+
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    for col in date_defaults:
+        if col not in df.columns:
+            df[col] = pd.NaT
+
+        df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    if df["conversion_probability"].max() > 1:
+        df["conversion_probability"] = df["conversion_probability"] / 100
+
+    df["converted"] = (df["converted"] > 0).astype(int)
+
+    return df
+
+
+# =============================================================================
+# HISTORICAL DATA LOADING AND DATE REFERENCE HELPERS
+# =============================================================================
+@st.cache_data(show_spinner=False)
+def load_historical_web_dataset() -> pd.DataFrame:
+    """Load the stable historical dataset used by the Web Analytics page."""
+    paths = [
+        Path("data/Cybernova_Final_Intelligence_v2.csv"),
+        Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
+    ]
+
+    for path in paths:
+        if path.exists():
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                continue
+
+    return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False)
+def load_date_reference_dataset() -> pd.DataFrame:
+    """Load the stable historical file used only for date limits."""
+    paths = [
+        Path("data/Cybernova_Final_Intelligence_v2.csv"),
+        Path("data/Cybernova_Final_Intelligence_v3_web.csv"),
+    ]
+
+    for path in paths:
+        if path.exists():
+            try:
+                return pd.read_csv(path)
+            except Exception:
+                continue
+
+    return pd.DataFrame()
+
+
+def get_reference_date_limits():
+    """Return the true historical inquiry_date range from the stable CSV."""
+    reference_df = load_date_reference_dataset()
+
+    if reference_df.empty or "inquiry_date" not in reference_df.columns:
+        return None, None
+
+    reference_dates = pd.to_datetime(
+        reference_df["inquiry_date"],
+        errors="coerce",
+    ).dropna()
+
+    if reference_dates.empty:
+        return None, None
+
+    return reference_dates.min().date(), reference_dates.max().date()
+
+
+def keep_records_inside_reference_window(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+    """Remove accidental live/simulation rows outside the historical range."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    if start_date is None or end_date is None or "inquiry_date" not in df.columns:
+        return df.copy()
+
+    cleaned = df.copy()
+    dates = pd.to_datetime(cleaned["inquiry_date"], errors="coerce")
+    keep_mask = dates.isna() | ((dates.dt.date >= start_date) & (dates.dt.date <= end_date))
+
+    return cleaned.loc[keep_mask].copy()
+
+
+def build_web_analytics_source(incoming_df: pd.DataFrame) -> pd.DataFrame:
+    """Build Web Analytics data from historical data plus valid incoming rows.
+
+    The live API may pass current-date rows. Those rows should not replace the
+    historical CyberNova web dataset used for this assessed dashboard.
+    """
+    incoming_df = incoming_df.copy() if incoming_df is not None else pd.DataFrame()
+    historical_df = load_historical_web_dataset()
+
+    reference_start, reference_end = get_reference_date_limits()
+
+    historical_df = keep_records_inside_reference_window(
+        historical_df,
+        reference_start,
+        reference_end,
+    )
+
+    incoming_df = keep_records_inside_reference_window(
+        incoming_df,
+        reference_start,
+        reference_end,
+    )
+
+    frames = []
+
+    if not historical_df.empty:
+        frames.append(historical_df)
+
+    if not incoming_df.empty:
+        frames.append(incoming_df)
+
+    if not frames:
+        return pd.DataFrame()
+
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+
+    try:
+        combined = clean_dashboard_data(combined)
+    except Exception:
+        pass
+
+    combined = ensure_web_columns(combined)
+
+    if "client_id" in combined.columns:
+        combined["_sort_date"] = combined["last_web_event"].fillna(combined["inquiry_date"])
+        combined = combined.sort_values("_sort_date")
+        combined = combined.drop_duplicates(subset=["client_id"], keep="last")
+        combined = combined.drop(columns=["_sort_date"], errors="ignore")
+
+    return combined
+
+
+def get_date_limits(valid_dates: pd.Series):
+    """Return date limits for the filter without forcing a selected range."""
+    reference_start, reference_end = get_reference_date_limits()
+
+    if reference_start is not None and reference_end is not None:
+        return reference_start, reference_end
+
+    if valid_dates.empty:
+        return None, None
+
+    return valid_dates.min().date(), valid_dates.max().date()
+
+
+def normalise_date_range(date_range):
+    """Keep the date filter empty unless the user selects a complete range."""
+    if date_range is None:
+        return None, None
+
+    if isinstance(date_range, (tuple, list)):
+        if len(date_range) == 2 and date_range[0] is not None and date_range[1] is not None:
+            start_date = date_range[0]
+            end_date = date_range[1]
+
+            if start_date > end_date:
+                start_date, end_date = end_date, start_date
+
+            return start_date, end_date
+
+    return None, None
+
+
+# =============================================================================
+# PERIOD HELPERS
+# =============================================================================
+def get_previous_period(start_date, end_date):
+    if start_date is None or end_date is None:
+        return None, None
+
+    days = (end_date - start_date).days + 1
+    previous_end = start_date - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=days - 1)
+
+    return previous_start, previous_end
+
+
+def filter_by_date(df, start_date, end_date, date_col="inquiry_date"):
+    if start_date is None or end_date is None:
+        return df.copy()
+
+    if date_col not in df.columns:
+        return df.copy()
+
+    dates = pd.to_datetime(df[date_col], errors="coerce")
+
+    return df[
+        (dates.dt.date >= start_date)
+        & (dates.dt.date <= end_date)
+    ].copy()
+
+
+def date_label(start_date, end_date):
+    if start_date is None or end_date is None:
+        return "Full available timeline"
+
+    return f"{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}"
+
+
+# =============================================================================
+# KPI HELPERS
+# =============================================================================
+def total_web_activity(df: pd.DataFrame) -> int:
+    available_cols = [
+        col
+        for col in ["total_web_requests", "total_web_events", "web_visit_count"]
+        if col in df.columns
+    ]
+
+    if not available_cols:
+        return 0
+
+    return int(df[available_cols].max(axis=1).sum())
+
+
+def delta_badge(current, previous, higher_is_good=True, mode="percent"):
+    try:
+        current = float(current)
+        previous = float(previous)
+    except Exception:
+        return '<span class="web-delta neutral">±0.0%</span>'
+
+    if abs(previous) < 1e-9:
+        return '<span class="web-delta neutral">±0.0%</span>'
+
+    if mode == "points":
+        change = current - previous
+        good = change >= 0 if higher_is_good else change <= 0
+        css_class = "good" if good else "bad"
+        sign = "+" if change >= 0 else "-"
+        return f'<span class="web-delta {css_class}">{sign}{abs(change):.1f} pts</span>'
+
+    change = ((current - previous) / abs(previous)) * 100
+    good = change >= 0 if higher_is_good else change <= 0
+    css_class = "good" if good else "bad"
+    sign = "+" if change >= 0 else "-"
+
+    return f'<span class="web-delta {css_class}">{sign}{abs(change):.1f}%</span>'
+
+
+def kpi_card(label, value, delta_html, note, featured=False):
+    featured_class = " featured" if featured else ""
+
+    render_html(
+        f"""
+        <div class="web-kpi-card{featured_class}">
+            <div class="web-kpi-label">{label}</div>
+            <div class="web-kpi-value">{value}</div>
+            {delta_html}
+            <div class="web-kpi-note">{note}</div>
+        </div>
+        """
+    )
+
+
+# =============================================================================
+# CHART HELPERS
+# =============================================================================
+def apply_chart_layout(fig, height=235):
+    fig.update_layout(
+        height=height,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(
+            family="Inter, system-ui",
+            color=TEXT_MUTED,
+            size=11,
+        ),
+        margin=dict(l=12, r=12, t=10, b=18),
+        hoverlabel=dict(
+            bgcolor=CARD_BG,
+            bordercolor=PURPLE,
+            font_color=TEXT_LIGHT,
+        ),
+        legend=dict(
+            font=dict(color=TEXT_MUTED, size=10),
+        ),
+    )
+
+    fig.update_xaxes(
+        showgrid=False,
+        zeroline=False,
+        tickfont=dict(color=TEXT_MUTED, size=10),
+        title_font=dict(color=TEXT_MUTED, size=10),
+    )
+
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="rgba(168,85,247,0.10)",
+        zeroline=False,
+        tickfont=dict(color=TEXT_MUTED, size=10),
+        title_font=dict(color=TEXT_MUTED, size=10),
+    )
+
+    return fig
+
+
+def render_chart(title, subtitle, fig, key, expanded_height=500):
+    render_html(
+        f"""
+        <div class="web-chart-heading">
+            <h3>{title}</h3>
+            <p>{subtitle}</p>
+        </div>
+        """
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key=f"{key}_main",
+        config={
+            "displayModeBar": False,
+            "responsive": True,
+        },
+    )
+
+    with st.expander("↗ Expand chart"):
+        full_fig = go.Figure(fig)
+        full_fig.update_layout(height=expanded_height)
+
+        st.plotly_chart(
+            full_fig,
+            use_container_width=True,
+            key=f"{key}_expanded",
+            config={
+                "displayModeBar": True,
+                "displaylogo": False,
+                "responsive": True,
+            },
+        )
+
+
+# =============================================================================
+# TABLE HELPERS
+# =============================================================================
+def decide_action(row) -> str:
+    high_intent = float(row.get("High Intent Hits", 0))
+    demo = float(row.get("Demo Requests", 0))
+    contract_hits = float(row.get("Contract Confirmations", 0))
+    converted = int(row.get("Converted", 0))
+
+    if converted == 1:
+        return '<span class="web-action-hot">Protect / upsell</span>'
+
+    if high_intent >= 5 and demo >= 1 and contract_hits == 0:
+        return '<span class="web-action-review">Urgent follow-up</span>'
+
+    if high_intent >= 3:
+        return '<span class="web-action-review">Sales call</span>'
+
+    return '<span class="web-action-nurture">Nurture</span>'
+
+
+def render_evidence_table(evidence_table: pd.DataFrame) -> None:
+    if evidence_table.empty:
+        st.info("No IIS-to-sales evidence records available.")
+        return
+
+    headers = evidence_table.columns.tolist()
+
+    html_rows = []
+
+    for _, row in evidence_table.iterrows():
+        cells = []
+
+        for col in headers:
+            value = row[col]
+
+            if col == "Converted":
+                badge_class = "yes" if int(value) == 1 else "no"
+                badge_text = "Yes" if int(value) == 1 else "No"
+                cells.append(
+                    f'<td><span class="web-badge {badge_class}">{badge_text}</span></td>'
+                )
+
+            elif col == "Suggested Action":
+                cells.append(f"<td>{value}</td>")
+
+            else:
+                safe_value = html.escape(str(value))
+                cells.append(f"<td>{safe_value}</td>")
+
+        html_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    html_head = "".join(
+        f"<th>{html.escape(str(col))}</th>"
+        for col in headers
+    )
+
+    table_html = f"""
+    <div class="web-table-wrap">
+        <table class="web-evidence-table">
+            <thead>
+                <tr>{html_head}</tr>
+            </thead>
+            <tbody>
+                {''.join(html_rows)}
+            </tbody>
+        </table>
+    </div>
+    """
+
+    render_html(table_html)
+
+
+# =============================================================================
+# MAIN PAGE
+# =============================================================================
+def show(df):
+    web_css()
+
+    # Clear old Streamlit date-state that used to force-select the live date range.
+    date_filter_version = "historical_web_analytics_window_v1"
+
+    if st.session_state.get("_web_date_filter_version") != date_filter_version:
+        st.session_state.pop("web_date_filter", None)
+        st.session_state["_web_date_filter_version"] = date_filter_version
+
+    df = build_web_analytics_source(df)
+
+    if df.empty:
+        st.warning(
+            "No web analytics data is available. Check that "
+            "data/Cybernova_Final_Intelligence_v2.csv exists and contains inquiry_date records."
+        )
+        return
+
+    # -------------------------------------------------------------------------
+    # Reset filters
+    # -------------------------------------------------------------------------
+    if st.session_state.pop("_web_reset_filters", False):
+        reset_keys = [
+            "web_date_filter",
+            "web_country_filter",
+            "web_channel_filter",
+            "web_service_filter",
+            "web_industry_filter",
+        ]
+
+        for key in reset_keys:
+            st.session_state.pop(key, None)
+
+    # -------------------------------------------------------------------------
+    # Top action buttons
+    # -------------------------------------------------------------------------
+    nav_left, nav_space, nav_right = st.columns([1.5, 5.0, 1.4])
+
+    with nav_left:
+        if st.button(
+            "← Back to Overview",
+            key="web_back_button",
+            use_container_width=True,
+        ):
+            st.session_state.active_page = "Overview"
+            st.session_state.nav_target = "Overview"
+            st.rerun()
+
+    with nav_right:
+        if st.button(
+            "↺ Reset Filters",
+            key="web_reset_button",
+            use_container_width=True,
+        ):
+            st.session_state["_web_reset_filters"] = True
+            st.rerun()
+
+    # -------------------------------------------------------------------------
+    # Title
+    # -------------------------------------------------------------------------
+    render_html(
+        """
+        <div class="web-title">Web Analytics & IIS Logs</div>
+        <div class="web-subtitle">
+            IIS-style website behaviour, intent signals, and web-to-sales conversion evidence.
+        </div>
+        """
+    )
+
+    # -------------------------------------------------------------------------
+    # Filters
+    # -------------------------------------------------------------------------
+    render_html('<div class="web-small-label">Filters</div>')
+
+    f0, f1, f2, f3, f4 = st.columns([1.25, 1, 1, 1, 1])
+
+    valid_dates = df["inquiry_date"].dropna()
+
+    with f0:
+        min_date, max_date = get_date_limits(valid_dates)
+
+        if min_date is not None:
+            date_range = st.date_input(
+                "Date Range",
+                value=(),
+                min_value=min_date,
+                max_value=max_date,
+                format="YYYY/MM/DD",
+                key="web_date_filter",
+            )
+
+            start_date, end_date = normalise_date_range(date_range)
+        else:
+            start_date, end_date = None, None
+            st.date_input(
+                "Date Range",
+                value=None,
+                disabled=True,
+                key="web_date_filter",
+            )
+
+    with f1:
+        countries = ["All"] + sorted(df["country"].dropna().astype(str).unique())
+        selected_country = st.selectbox(
+            "Country",
+            countries,
+            key="web_country_filter",
+        )
+
+    with f2:
+        channels = ["All"] + sorted(df["marketing_channel"].dropna().astype(str).unique())
+        selected_channel = st.selectbox(
+            "Marketing Channel",
+            channels,
+            key="web_channel_filter",
+        )
+
+    with f3:
+        services = ["All"] + sorted(df["service_type"].dropna().astype(str).unique())
+        selected_service = st.selectbox(
+            "Service",
+            services,
+            key="web_service_filter",
+        )
+
+    with f4:
+        industries = ["All"] + sorted(df["industry"].dropna().astype(str).unique())
+        selected_industry = st.selectbox(
+            "Industry",
+            industries,
+            key="web_industry_filter",
+        )
+
+    # -------------------------------------------------------------------------
+    # Apply filters
+    # -------------------------------------------------------------------------
+    base_df = df.copy()
+
+    if selected_country != "All":
+        base_df = base_df[base_df["country"].astype(str) == selected_country]
+
+    if selected_channel != "All":
+        base_df = base_df[base_df["marketing_channel"].astype(str) == selected_channel]
+
+    if selected_service != "All":
+        base_df = base_df[base_df["service_type"].astype(str) == selected_service]
+
+    if selected_industry != "All":
+        base_df = base_df[base_df["industry"].astype(str) == selected_industry]
+
+    prev_start, prev_end = get_previous_period(start_date, end_date)
+
+    filtered_df = filter_by_date(base_df, start_date, end_date)
+
+    if start_date is None or end_date is None:
+        previous_df = pd.DataFrame(columns=base_df.columns)
+    else:
+        previous_df = filter_by_date(base_df, prev_start, prev_end)
+
+    render_html(
+        f"""
+        <div class="web-period-pill">
+            Current: {date_label(start_date, end_date)}
+            &nbsp; | &nbsp;
+            Comparison: {date_label(prev_start, prev_end)}
+        </div>
+        """
+    )
+
+    if filtered_df.empty:
+        st.warning("No web records match the selected filters.")
+        return
+
+    # -------------------------------------------------------------------------
+    # KPI calculations
+    # -------------------------------------------------------------------------
+    web_mask = web_active_mask(filtered_df)
+    previous_web_mask = web_active_mask(previous_df) if not previous_df.empty else pd.Series(False, index=previous_df.index)
+
+    web_active_leads = int(web_mask.sum())
+    previous_web_active_leads = int(previous_web_mask.sum()) if not previous_df.empty else 0
+
+    total_leads = int(len(filtered_df))
+    previous_total_leads = int(len(previous_df))
+
+    total_web_events = total_web_activity(filtered_df)
+    previous_total_web_events = total_web_activity(previous_df)
+
+    high_intent_hits = int(filtered_df["high_intent_hits"].sum())
+    previous_high_intent_hits = int(previous_df["high_intent_hits"].sum()) if not previous_df.empty else 0
+
+    demo_requests = int(filtered_df["demo_request_count"].sum())
+
+    web_contracts = int(filtered_df.loc[web_mask, "converted"].sum())
+    previous_web_contracts = int(previous_df.loc[previous_web_mask, "converted"].sum()) if not previous_df.empty else 0
+
+    web_to_contract_rate = safe_rate(web_contracts, web_active_leads)
+    previous_web_to_contract_rate = safe_rate(previous_web_contracts, previous_web_active_leads)
+
+    web_influenced_revenue = float(filtered_df.loc[web_mask, "actual_revenue"].sum())
+    previous_web_influenced_revenue = float(previous_df.loc[previous_web_mask, "actual_revenue"].sum()) if not previous_df.empty else 0
+
+    web_active_rate = safe_rate(web_active_leads, total_leads)
+    previous_web_active_rate = safe_rate(previous_web_active_leads, previous_total_leads)
+
+    # -------------------------------------------------------------------------
+    # KPI cards
+    # -------------------------------------------------------------------------
+    render_html('<div class="web-section-label">Key Web Intelligence Indicators</div>')
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+
+    with k1:
+        kpi_card(
+            label="IIS / Web Events",
+            value=f"{total_web_events:,}",
+            delta_html=delta_badge(total_web_events, previous_total_web_events),
+            note="Website activity captured from IIS-style behaviour.",
+            featured=True,
+        )
+
+    with k2:
+        kpi_card(
+            label="Web-Active Leads",
+            value=f"{web_active_leads:,}",
+            delta_html=delta_badge(web_active_rate, previous_web_active_rate, mode="points"),
+            note=f"{percent(web_active_rate)} of leads show website behaviour.",
+        )
+
+    with k3:
+        kpi_card(
+            label="High-Intent Hits",
+            value=f"{high_intent_hits:,}",
+            delta_html=delta_badge(high_intent_hits, previous_high_intent_hits),
+            note="Pricing, demo, assistant and high-intent actions.",
+        )
+
+    with k4:
+        kpi_card(
+            label="Web-to-Contract",
+            value=percent(web_to_contract_rate),
+            delta_html=delta_badge(web_to_contract_rate, previous_web_to_contract_rate, mode="points"),
+            note=f"{web_contracts:,} web-influenced contracts closed.",
+        )
+
+    with k5:
+        kpi_card(
+            label="Web Revenue",
+            value=money_short(web_influenced_revenue),
+            delta_html=delta_badge(web_influenced_revenue, previous_web_influenced_revenue),
+            note="Closed revenue linked to visible website activity.",
+        )
+
+    # -------------------------------------------------------------------------
+    # Prescriptive summary
+    # -------------------------------------------------------------------------
+    top_channel = "Unknown"
+    top_country = "Unknown"
+
+    if not filtered_df.empty:
+        channel_summary = (
+            filtered_df.groupby("marketing_channel", as_index=False)
+            .agg(
+                high_intent_hits=("high_intent_hits", "sum"),
+                revenue=("actual_revenue", "sum"),
+            )
+            .sort_values(["high_intent_hits", "revenue"], ascending=False)
+        )
+
+        if not channel_summary.empty:
+            top_channel = channel_summary.iloc[0]["marketing_channel"]
+
+        country_summary = (
+            filtered_df.groupby("country", as_index=False)
+            .agg(
+                web_visit_count=("web_visit_count", "sum"),
+                revenue=("actual_revenue", "sum"),
+            )
+            .sort_values(["web_visit_count", "revenue"], ascending=False)
+        )
+
+        if not country_summary.empty:
+            top_country = country_summary.iloc[0]["country"]
+
+    render_html(
+        f"""
+        <div class="web-insight-box">
+            <b>Web intelligence summary:</b>
+            CyberNova has <span class="web-insight-highlight">{web_active_leads:,}</span> web-active leads,
+            <span class="web-insight-highlight">{web_contracts:,}</span> web-led contracts, and
+            <span class="web-insight-highlight">{money_short(web_influenced_revenue)}</span> in web-influenced revenue.
+            The strongest current web signal is from
+            <span class="web-insight-highlight">{top_channel}</span>, with demand concentrated around
+            <span class="web-insight-highlight">{top_country}</span>.
+        </div>
+        """
+    )
+
+    # -------------------------------------------------------------------------
+    # Funnel data
+    # -------------------------------------------------------------------------
+    try:
+        staged_df = add_stage_flags(filtered_df.copy())
+    except Exception:
+        staged_df = filtered_df.copy()
+
+    if "has_demo" not in staged_df.columns:
+        staged_df["has_demo"] = staged_df["demo_request_count"] > 0
+
+    if "has_proposal" not in staged_df.columns:
+        staged_df["has_proposal"] = staged_df["proposal_download_count"] > 0
+
+    if "has_contract" not in staged_df.columns:
+        staged_df["has_contract"] = (
+            (staged_df["contract_confirmation_count"] > 0)
+            | (staged_df["converted"] > 0)
+        )
+
+    funnel_values = [
+        web_active_leads,
+        int(staged_df.loc[web_mask, "has_demo"].sum()),
+        int(staged_df.loc[web_mask, "has_proposal"].sum()),
+        int(staged_df.loc[web_mask, "has_contract"].sum()),
+    ]
+
+    # -------------------------------------------------------------------------
+    # Row 1 charts
+    # -------------------------------------------------------------------------
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig_funnel = go.Figure(
+            go.Funnel(
+                y=["Website Visit", "Demo Request", "Proposal", "Contract"],
+                x=funnel_values,
+                textinfo="value+percent initial",
+                marker=dict(
+                    color=[PURPLE, PURPLE_BRIGHT, PURPLE_SOFT, CYAN],
+                    line=dict(color="rgba(255,255,255,0.14)", width=1),
+                ),
+                hovertemplate="<b>%{y}</b><br>Count: %{x:,}<extra></extra>",
+            )
+        )
+
+        fig_funnel = apply_chart_layout(fig_funnel, height=235)
+
+        render_chart(
+            title="Website Visit → Demo → Proposal → Contract Funnel",
+            subtitle="Shows where web interest turns into commercial progress.",
+            fig=fig_funnel,
+            key="web_funnel",
+        )
+
+    with col2:
+        channel_intent = (
+            filtered_df.groupby("marketing_channel", as_index=False)
+            .agg(
+                high_intent_hits=("high_intent_hits", "sum"),
+                revenue=("actual_revenue", "sum"),
+                leads=("client_id", "count"),
+            )
+            .sort_values("high_intent_hits", ascending=False)
+            .head(8)
+        )
+
+        fig_channel = go.Figure(
+            go.Bar(
+                y=channel_intent["marketing_channel"][::-1],
+                x=channel_intent["high_intent_hits"][::-1],
+                orientation="h",
+                text=channel_intent["high_intent_hits"][::-1],
+                textposition="outside",
+                marker=dict(
+                    color=channel_intent["revenue"][::-1],
+                    colorscale=[
+                        [0.0, "#4c1d95"],
+                        [0.5, "#7c3aed"],
+                        [1.0, "#c4b5fd"],
+                    ],
+                    line=dict(width=0),
+                ),
+                customdata=channel_intent[["revenue", "leads"]][::-1],
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "High-intent hits: %{x:,}<br>"
+                    "Revenue: BWP %{customdata[0]:,.0f}<br>"
+                    "Leads: %{customdata[1]:,}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+        fig_channel = apply_chart_layout(fig_channel, height=235)
+
+        render_chart(
+            title="Web Intent by Marketing Channel",
+            subtitle="Shows which channels create serious buying intent.",
+            fig=fig_channel,
+            key="web_channel_intent",
+        )
+
+    # -------------------------------------------------------------------------
+    # Row 2 charts
+    # -------------------------------------------------------------------------
+    col3, col4 = st.columns(2)
+
+    with col3:
+        geo_df = (
+            filtered_df.groupby("country", as_index=False)
+            .agg(
+                web_visits=("web_visit_count", "sum"),
+                high_intent_hits=("high_intent_hits", "sum"),
+                revenue=("actual_revenue", "sum"),
+            )
+            .sort_values("web_visits", ascending=False)
+            .head(8)
+        )
+
+        fig_geo = go.Figure(
+            go.Bar(
+                y=geo_df["country"][::-1],
+                x=geo_df["web_visits"][::-1],
+                orientation="h",
+                text=geo_df["web_visits"][::-1],
+                textposition="outside",
+                marker=dict(
+                    color=geo_df["high_intent_hits"][::-1],
+                    colorscale=[
+                        [0.0, "#4c1d95"],
+                        [0.55, "#7c3aed"],
+                        [1.0, "#c4b5fd"],
+                    ],
+                    line=dict(width=0),
+                ),
+                customdata=geo_df[["high_intent_hits", "revenue"]][::-1],
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Web visits: %{x:,}<br>"
+                    "High-intent hits: %{customdata[0]:,}<br>"
+                    "Revenue: BWP %{customdata[1]:,.0f}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+        fig_geo = apply_chart_layout(fig_geo, height=225)
+
+        render_chart(
+            title="Geographic Web Demand",
+            subtitle="Identifies markets generating traffic, intent and revenue.",
+            fig=fig_geo,
+            key="web_geo_demand",
+        )
+
+    with col4:
+        avg_response = float(filtered_df["avg_response_time_ms"].mean())
+        error_count = int(filtered_df["web_error_count"].sum())
+        assistant_requests = int(filtered_df["ai_assistant_request_count"].sum())
+
+        ops_df = pd.DataFrame(
+            {
+                "Metric": [
+                    "Avg response ms",
+                    "Web errors",
+                    "Demo requests",
+                    "AI assistant requests",
+                ],
+                "Value": [
+                    avg_response,
+                    error_count,
+                    demo_requests,
+                    assistant_requests,
+                ],
+            }
+        )
+
+        fig_ops = go.Figure(
+            go.Bar(
+                x=ops_df["Metric"],
+                y=ops_df["Value"],
+                text=[
+                    f"{value:,.0f}"
+                    for value in ops_df["Value"]
+                ],
+                textposition="outside",
+                marker=dict(
+                    color=[PURPLE, RED, PURPLE_BRIGHT, PURPLE_SOFT],
+                    line=dict(width=0),
+                ),
+                hovertemplate=(
+                    "<b>%{x}</b><br>"
+                    "Value: %{y:,.0f}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+        fig_ops = apply_chart_layout(fig_ops, height=225)
+
+        render_chart(
+            title="Web Operational Quality",
+            subtitle="Tracks response time, errors and digital engagement signals.",
+            fig=fig_ops,
+            key="web_ops_quality",
+        )
+
+    # -------------------------------------------------------------------------
+    # Row 3: Web revenue by service and channel conversion
+    # -------------------------------------------------------------------------
+    col5, col6 = st.columns(2)
+
+    with col5:
+        service_web = (
+            filtered_df.loc[web_mask]
+            .groupby("service_type", as_index=False)
+            .agg(
+                revenue=("actual_revenue", "sum"),
+                leads=("client_id", "count"),
+                contracts=("converted", "sum"),
+            )
+            .sort_values("revenue", ascending=False)
+            .head(6)
+        )
+
+        fig_service = go.Figure(
+            go.Bar(
+                y=service_web["service_type"][::-1],
+                x=service_web["revenue"][::-1],
+                orientation="h",
+                text=[
+                    money_short(value)
+                    for value in service_web["revenue"][::-1]
+                ],
+                textposition="outside",
+                marker=dict(
+                    color=service_web["revenue"][::-1],
+                    colorscale=[
+                        [0.0, "#4c1d95"],
+                        [0.5, "#7c3aed"],
+                        [1.0, "#c4b5fd"],
+                    ],
+                    line=dict(width=0),
+                ),
+                customdata=service_web[["leads", "contracts"]][::-1],
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Revenue: BWP %{x:,.0f}<br>"
+                    "Web-active leads: %{customdata[0]:,}<br>"
+                    "Contracts: %{customdata[1]:,}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+        fig_service = apply_chart_layout(fig_service, height=225)
+        fig_service.update_xaxes(tickprefix="BWP ")
+
+        render_chart(
+            title="Web-Influenced Revenue by Service",
+            subtitle="Shows which services are converting digital demand into value.",
+            fig=fig_service,
+            key="web_service_revenue",
+        )
+
+    with col6:
+        channel_conversion = (
+            filtered_df.loc[web_mask]
+            .groupby("marketing_channel", as_index=False)
+            .agg(
+                leads=("client_id", "count"),
+                contracts=("converted", "sum"),
+                revenue=("actual_revenue", "sum"),
+            )
+        )
+
+        channel_conversion["conversion_rate"] = channel_conversion.apply(
+            lambda row: safe_rate(row["contracts"], row["leads"]),
+            axis=1,
+        )
+
+        channel_conversion = channel_conversion.sort_values(
+            "conversion_rate",
+            ascending=False,
+        ).head(8)
+
+        fig_conv = go.Figure(
+            go.Bar(
+                y=channel_conversion["marketing_channel"][::-1],
+                x=channel_conversion["conversion_rate"][::-1],
+                orientation="h",
+                text=[
+                    percent(value)
+                    for value in channel_conversion["conversion_rate"][::-1]
+                ],
+                textposition="outside",
+                marker=dict(
+                    color=channel_conversion["conversion_rate"][::-1],
+                    colorscale=[
+                        [0.0, "#4c1d95"],
+                        [0.5, "#7c3aed"],
+                        [1.0, "#7ef9d6"],
+                    ],
+                    line=dict(width=0),
+                ),
+                customdata=channel_conversion[["leads", "contracts", "revenue"]][::-1],
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "Conversion: %{x:.1f}%<br>"
+                    "Leads: %{customdata[0]:,}<br>"
+                    "Contracts: %{customdata[1]:,}<br>"
+                    "Revenue: BWP %{customdata[2]:,.0f}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+        fig_conv = apply_chart_layout(fig_conv, height=225)
+        fig_conv.update_xaxes(ticksuffix="%")
+
+        render_chart(
+            title="Channel Web-to-Contract Conversion",
+            subtitle="Shows which traffic sources actually turn into contracts.",
+            fig=fig_conv,
+            key="web_channel_conversion",
+        )
+
+    # -------------------------------------------------------------------------
+    # Evidence table
+    # -------------------------------------------------------------------------
+    render_html(
+        """
+        <div class="web-chart-heading">
+            <h3>IIS-to-Sales Evidence Table</h3>
+            <p>Shows exact website behaviour columns linked to lead and revenue outcomes.</p>
+        </div>
+        """
+    )
+
+    evidence_table = filtered_df.copy()
+
+    evidence_table["Web-to-Sales Value"] = evidence_table["actual_revenue"].apply(money_short)
+
+    evidence_table = evidence_table.sort_values(
+        by=["high_intent_hits", "actual_revenue"],
+        ascending=False,
+    ).head(12)
+
+    evidence_table = evidence_table[
+        [
+            "client_id",
+            "country",
+            "marketing_channel",
+            "service_type",
+            "web_visit_count",
+            "high_intent_hits",
+            "demo_request_count",
+            "contract_confirmation_count",
+            "converted",
+            "Web-to-Sales Value",
+        ]
+    ].rename(
+        columns={
+            "client_id": "Client",
+            "country": "Country",
+            "marketing_channel": "Channel",
+            "service_type": "Service",
+            "web_visit_count": "Web Visits",
+            "high_intent_hits": "High Intent Hits",
+            "demo_request_count": "Demo Requests",
+            "contract_confirmation_count": "Contract Confirmations",
+            "converted": "Converted",
+        }
+    )
+
+    evidence_table["Suggested Action"] = evidence_table.apply(decide_action, axis=1)
+
+    render_evidence_table(evidence_table)
+
+    render_html(
+        """
+        <div class="web-footer">
+            CyberNova Web Analytics • IIS-style logs linked to sales outcomes • All figures in BWP
+        </div>
+        """
+    )
