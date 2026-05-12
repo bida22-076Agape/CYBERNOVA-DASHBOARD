@@ -2,6 +2,8 @@ streamlit
 pandas
 numpy
 plotly
+flask
 scikit-learn
 openpyxl
 streamlit-autorefresh
+requests
