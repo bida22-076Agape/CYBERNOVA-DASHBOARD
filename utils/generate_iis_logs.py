@@ -5,15 +5,6 @@ import pandas as pd
 import numpy as np
 
 
-# ============================================================
-# CYBERNOVA IIS WEB SERVER LOG GENERATOR
-# Generates:
-# 1. Raw IIS-style web logs
-# 2. Cleaned web analytics logs
-# 3. Web behaviour features by client
-# 4. Merged CRM + web analytics dataset
-# ============================================================
-
 print("Starting CyberNova IIS web log generator...")
 
 RANDOM_SEED = 42
@@ -33,10 +24,7 @@ WEB_FEATURES_FILE = DATA_DIR / "web_features_by_client.csv"
 MERGED_OUTPUT_FILE = DATA_DIR / "Cybernova_Final_Intelligence_v3_web.csv"
 
 
-# ============================================================
-# LOAD SALES DATA
-# ============================================================
-
+# load the sales CSV and validate it has a client_id column
 if not SALES_FILE.exists():
     raise FileNotFoundError(
         f"Could not find {SALES_FILE}. "
@@ -53,10 +41,7 @@ sales_df["client_id"] = sales_df["client_id"].astype(str)
 print(f"Loaded sales dataset: {len(sales_df):,} rows")
 
 
-# ============================================================
-# ADD SAFE FALLBACK COLUMNS
-# ============================================================
-
+# fill in any missing columns with sensible defaults
 fallbacks = {
     "country": "Unknown",
     "city": "Unknown",
@@ -75,10 +60,7 @@ if "service_type" not in sales_df.columns and "service" in sales_df.columns:
     sales_df["service_type"] = sales_df["service"]
 
 
-# ============================================================
-# WEBSITE EVENT DESIGN
-# ============================================================
-
+# maps event names to URL paths
 EVENT_TO_URI = {
     "Homepage Visit": "/",
     "Services Page View": "/services",
@@ -126,16 +108,10 @@ REFERRERS = [
 ]
 
 
-# ============================================================
-# HELPER FUNCTIONS
-# ============================================================
-
 def safe_value(row, column, default="Unknown"):
     value = row.get(column, default)
-
     if pd.isna(value) or str(value).strip() == "":
         return default
-
     return str(value)
 
 
@@ -150,6 +126,7 @@ def random_datetime():
     return start_date + timedelta(seconds=random.randint(0, total_seconds))
 
 
+# picks a website event based on where the lead is in the sales pipeline
 def choose_event(row):
     stage = safe_value(row, "current_stage", "Inquiry")
 
@@ -191,33 +168,19 @@ def choose_event(row):
 
 def choose_status_code(event_type):
     if event_type in HIGH_INTENT_EVENTS:
-        return random.choices(
-            [200, 302, 404, 500],
-            weights=[88, 7, 4, 1],
-            k=1
-        )[0]
-
-    return random.choices(
-        [200, 304, 404, 500],
-        weights=[86, 8, 5, 1],
-        k=1
-    )[0]
+        return random.choices([200, 302, 404, 500], weights=[88, 7, 4, 1], k=1)[0]
+    return random.choices([200, 304, 404, 500], weights=[86, 8, 5, 1], k=1)[0]
 
 
 def response_time_for_status(status_code):
     if status_code >= 500:
         return random.randint(900, 3500)
-
     if status_code == 404:
         return random.randint(300, 1200)
-
     return random.randint(80, 850)
 
 
-# ============================================================
-# GENERATE RAW IIS LOGS
-# ============================================================
-
+# generate raw IIS log rows
 log_rows = []
 
 for i in range(N_LOGS):
@@ -280,10 +243,7 @@ raw_iis_df.to_csv(RAW_IIS_FILE, index=False)
 print(f"Raw IIS logs created: {len(raw_iis_df):,} rows")
 
 
-# ============================================================
-# CLEANED IIS LOGS
-# ============================================================
-
+# clean the raw logs and add derived columns
 cleaned_df = raw_iis_df.copy()
 
 cleaned_df["event_datetime"] = pd.to_datetime(
@@ -306,10 +266,7 @@ cleaned_df.to_csv(CLEANED_IIS_FILE, index=False)
 print(f"Cleaned IIS logs created: {len(cleaned_df):,} rows")
 
 
-# ============================================================
-# WEB FEATURES BY CLIENT
-# ============================================================
-
+# aggregate web behaviour per client
 features_df = cleaned_df.groupby("client_id").agg(
     total_web_requests=("client_id", "size"),
     unique_sessions=("session_id", "nunique"),
@@ -328,6 +285,7 @@ features_df = cleaned_df.groupby("client_id").agg(
 
 features_df["avg_response_time_ms"] = features_df["avg_response_time_ms"].round(1)
 
+# find the most visited page per client
 top_pages = (
     cleaned_df.groupby(["client_id", "cs_uri_stem"])
     .size()
@@ -348,10 +306,7 @@ features_df.to_csv(WEB_FEATURES_FILE, index=False)
 print(f"Web features created: {len(features_df):,} client rows")
 
 
-# ============================================================
-# MERGE CRM + WEB FEATURES
-# ============================================================
-
+# merge CRM data with web features on client_id
 overlap_cols = [
     col for col in features_df.columns
     if col in sales_df.columns and col != "client_id"
@@ -366,17 +321,11 @@ merged_df = sales_for_merge.merge(
 )
 
 web_numeric_cols = [
-    "total_web_requests",
-    "unique_sessions",
-    "web_visit_count",
-    "demo_request_count",
-    "ai_assistant_request_count",
-    "promotional_event_count",
-    "contract_confirmation_count",
-    "proposal_download_count",
-    "high_intent_hits",
-    "web_error_count",
-    "avg_response_time_ms"
+    "total_web_requests", "unique_sessions", "web_visit_count",
+    "demo_request_count", "ai_assistant_request_count",
+    "promotional_event_count", "contract_confirmation_count",
+    "proposal_download_count", "high_intent_hits",
+    "web_error_count", "avg_response_time_ms"
 ]
 
 for col in web_numeric_cols:
@@ -393,16 +342,12 @@ merged_df.to_csv(MERGED_OUTPUT_FILE, index=False)
 print(f"Merged dashboard dataset created: {len(merged_df):,} rows")
 
 
-# ============================================================
-# FINAL SUMMARY
-# ============================================================
-
 print("")
-print("CyberNova IIS web server log generation complete.")
-print(f"Raw IIS logs saved to:      {RAW_IIS_FILE}")
-print(f"Cleaned IIS logs saved to:  {CLEANED_IIS_FILE}")
-print(f"Web features saved to:      {WEB_FEATURES_FILE}")
-print(f"Merged v3 dataset saved to: {MERGED_OUTPUT_FILE}")
+print("IIS log generation complete.")
+print(f"Raw IIS logs:      {RAW_IIS_FILE}")
+print(f"Cleaned IIS logs:  {CLEANED_IIS_FILE}")
+print(f"Web features:      {WEB_FEATURES_FILE}")
+print(f"Merged v3 dataset: {MERGED_OUTPUT_FILE}")
 print("")
 print("Top website events:")
 print(cleaned_df["event_type"].value_counts().head(10).to_string())

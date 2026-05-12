@@ -1523,7 +1523,7 @@ def show(df):
         matrix_df = market_df.copy()
 
         # opportunity score - weights conversion probability, lead score and web signals
-    matrix_df["opportunity_score"] = (
+        matrix_df["opportunity_score"] = (
             matrix_df["conversion_probability"] * 45
             + matrix_df["lead_score"] * 0.35
             + matrix_df["high_intent_hits"] * 4

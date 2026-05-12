@@ -6,21 +6,9 @@ import pandas as pd
 import numpy as np
 
 
-# ============================================================
-# CYBERNOVA LIVE API
-# Purpose:
-# - Runs separately from Streamlit.
-# - Feeds live CRM/sales data into app.py.
-# - Adds matching IIS web server log rows.
-# - Supports Web Analytics, Sales, Marketing, and Executive pages.
-# ============================================================
-
 app = Flask(__name__)
 
-
-# ============================================================
-# FILE PATHS
-# ============================================================
+# file paths
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 
@@ -30,13 +18,9 @@ SALES_FILE_V2 = DATA_DIR / "Cybernova_Final_Intelligence_v2.csv"
 RAW_IIS_FILE = DATA_DIR / "iis_web_logs_raw.csv"
 CLEANED_IIS_FILE = DATA_DIR / "iis_web_logs_cleaned.csv"
 
-
-# ============================================================
-# SETTINGS
-# ============================================================
+# how many rows to keep in memory and return per poll
 MAX_STORED_ROWS = 3000
 RETURN_ROWS = 800
-
 
 SERVICE_REVENUE_RANGES = {
     "Fraud Monitoring Solution": (8000, 45000),
@@ -46,7 +30,6 @@ SERVICE_REVENUE_RANGES = {
     "Cloud Security Analytics": (7000, 32000),
     "AI Security Audit": (9000, 48000),
 }
-
 
 EVENT_TO_URI = {
     "Homepage Visit": "/",
@@ -61,7 +44,6 @@ EVENT_TO_URI = {
     "Contact Form Submit": "/contact",
 }
 
-
 HIGH_INTENT_EVENTS = [
     "Schedule Demo Request",
     "AI Assistant Request",
@@ -70,7 +52,6 @@ HIGH_INTENT_EVENTS = [
     "Contract Confirmation",
 ]
 
-
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/125.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15",
@@ -78,7 +59,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile Safari/604.1",
     "Mozilla/5.0 (Android 14; Mobile) Chrome/125.0",
 ]
-
 
 REFERRERS = [
     "https://www.google.com/",
@@ -90,18 +70,12 @@ REFERRERS = [
 ]
 
 
-# ============================================================
-# SAFE VALUE HELPERS
-# ============================================================
 def safe_value(row, column, default="Unknown"):
     try:
         value = row.get(column, default)
-
         if pd.isna(value) or str(value).strip() == "":
             return default
-
         return str(value)
-
     except Exception:
         return default
 
@@ -109,12 +83,9 @@ def safe_value(row, column, default="Unknown"):
 def safe_int(row, column, default=0):
     try:
         value = row.get(column, default)
-
         if pd.isna(value):
             return default
-
         return int(float(value))
-
     except Exception:
         return default
 
@@ -123,18 +94,14 @@ def random_ip():
     return ".".join(str(random.randint(1, 254)) for _ in range(4))
 
 
-# ============================================================
-# LOAD STARTING DATASET
-# ============================================================
+# loads whichever dataset is available - prefers the web-enhanced v3 file
 def load_initial_data():
     if SALES_FILE_V3.exists():
         data_file = SALES_FILE_V3
         print(f"Loaded web-enhanced dataset: {data_file}", flush=True)
-
     elif SALES_FILE_V2.exists():
         data_file = SALES_FILE_V2
         print(f"Loaded original dataset: {data_file}", flush=True)
-
     else:
         raise FileNotFoundError(
             "No CyberNova dataset found. Expected either "
@@ -147,82 +114,41 @@ def load_initial_data():
     if "service_type" not in df.columns and "service" in df.columns:
         df["service_type"] = df["service"]
 
-    date_columns = [
-        "inquiry_date",
-        "close_date",
-        "demo_date",
-        "proposal_date",
-        "first_web_event",
-        "last_web_event",
-    ]
-
-    for col in date_columns:
+    for col in ["inquiry_date", "close_date", "demo_date", "proposal_date",
+                "first_web_event", "last_web_event"]:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
+    # fill any missing columns so the API never crashes on a bad row
     fallback_columns = {
-        "client_id": "Unknown",
-        "country": "Unknown",
-        "country_group": "Unknown",
-        "city": "Unknown",
-        "industry": "Unknown",
-        "company_size": "Unknown",
-        "service_type": "Cyber Security Service",
-        "service_category": "Cyber Security",
-        "marketing_channel": "Direct",
-        "campaign_name": "Live Website Visit",
-        "current_stage": "Inquiry",
-        "sales_rep_name": "Unassigned",
-        "sales_team": "Unassigned",
-        "converted": 0,
-        "lead_score": 50,
-        "intent_score": 50,
-        "commercial_readiness_score": 50,
-        "actual_revenue": 0,
-        "forecast_revenue": 0,
-        "target_revenue": 0,
-        "revenue_gap": 0,
-        "conversion_probability": 0.25,
-        "web_visit_count": 0,
-        "total_web_requests": 0,
-        "unique_sessions": 0,
-        "demo_request_count": 0,
-        "ai_assistant_request_count": 0,
-        "promotional_event_count": 0,
-        "contract_confirmation_count": 0,
-        "proposal_download_count": 0,
-        "high_intent_hits": 0,
-        "web_error_count": 0,
-        "avg_response_time_ms": 0,
+        "client_id": "Unknown", "country": "Unknown", "country_group": "Unknown",
+        "city": "Unknown", "industry": "Unknown", "company_size": "Unknown",
+        "service_type": "Cyber Security Service", "service_category": "Cyber Security",
+        "marketing_channel": "Direct", "campaign_name": "Live Website Visit",
+        "current_stage": "Inquiry", "sales_rep_name": "Unassigned",
+        "sales_team": "Unassigned", "converted": 0, "lead_score": 50,
+        "intent_score": 50, "commercial_readiness_score": 50,
+        "actual_revenue": 0, "forecast_revenue": 0, "target_revenue": 0,
+        "revenue_gap": 0, "conversion_probability": 0.25, "web_visit_count": 0,
+        "total_web_requests": 0, "unique_sessions": 0, "demo_request_count": 0,
+        "ai_assistant_request_count": 0, "promotional_event_count": 0,
+        "contract_confirmation_count": 0, "proposal_download_count": 0,
+        "high_intent_hits": 0, "web_error_count": 0, "avg_response_time_ms": 0,
         "top_page": "No web activity",
     }
 
     for col, default in fallback_columns.items():
         if col not in df.columns:
             df[col] = default
-
         df[col] = df[col].fillna(default)
 
     numeric_columns = [
-        "converted",
-        "lead_score",
-        "intent_score",
-        "commercial_readiness_score",
-        "actual_revenue",
-        "forecast_revenue",
-        "target_revenue",
-        "revenue_gap",
-        "conversion_probability",
-        "web_visit_count",
-        "total_web_requests",
-        "unique_sessions",
-        "demo_request_count",
-        "ai_assistant_request_count",
-        "promotional_event_count",
-        "contract_confirmation_count",
-        "proposal_download_count",
-        "high_intent_hits",
-        "web_error_count",
+        "converted", "lead_score", "intent_score", "commercial_readiness_score",
+        "actual_revenue", "forecast_revenue", "target_revenue", "revenue_gap",
+        "conversion_probability", "web_visit_count", "total_web_requests",
+        "unique_sessions", "demo_request_count", "ai_assistant_request_count",
+        "promotional_event_count", "contract_confirmation_count",
+        "proposal_download_count", "high_intent_hits", "web_error_count",
         "avg_response_time_ms",
     ]
 
@@ -236,55 +162,37 @@ def load_initial_data():
     return df
 
 
-# ============================================================
-# INITIAL LIVE DATA STORE
-# ============================================================
+# load data once when the API starts
 base_df = load_initial_data()
 current_data = base_df.tail(1500).copy().reset_index(drop=True)
 
 
-# ============================================================
-# LIVE CRM RECORD GENERATION
-# ============================================================
 def choose_live_stage(converted):
     if converted == 1:
         return random.choice(["Proposal Sent", "Contract Confirmed"])
-
-    return random.choice([
-        "Inquiry",
-        "Demo Requested",
-        "Proposal Sent",
-    ])
+    return random.choice(["Inquiry", "Demo Requested", "Proposal Sent"])
 
 
 def choose_live_events(stage, converted):
-    events = [
-        "Homepage Visit",
-        "Services Page View",
-        "Pricing Page View",
-    ]
+    events = ["Homepage Visit", "Services Page View", "Pricing Page View"]
 
     if random.random() < 0.55:
         events.append("AI Assistant Request")
-
     if random.random() < 0.35:
         events.append("Contact Form Submit")
-
     if stage in ["Demo Requested", "Proposal Sent", "Contract Confirmed"]:
         events.append("Schedule Demo Request")
-
     if random.random() < 0.25:
         events.append("Promotional Event Request")
-
     if stage in ["Proposal Sent", "Contract Confirmed"]:
         events.append("Proposal Download")
-
     if converted == 1 or stage == "Contract Confirmed":
         events.append("Contract Confirmation")
 
     return events
 
 
+# generates 1-3 new CRM records per API poll to simulate live activity
 def generate_live_crm_records(records_to_add):
     new_records = []
 
@@ -296,14 +204,12 @@ def generate_live_crm_records(records_to_add):
 
         converted = 1 if random.random() < 0.28 else 0
         stage = choose_live_stage(converted)
-
         new_row = base_row.copy()
 
         new_row["client_id"] = f"CL{random.randint(100000, 999999)}"
         new_row["inquiry_date"] = datetime.now() - timedelta(minutes=random.randint(0, 30))
         new_row["last_web_event"] = datetime.now()
         new_row["first_web_event"] = datetime.now() - timedelta(minutes=random.randint(1, 90))
-
         new_row["converted"] = converted
         new_row["current_stage"] = stage
 
@@ -335,50 +241,27 @@ def generate_live_crm_records(records_to_add):
         new_row["high_intent_hits"] = demo_count + ai_count + promo_count + proposal_count + contract_count
         new_row["web_error_count"] = random.randint(0, 1)
         new_row["avg_response_time_ms"] = random.randint(120, 850)
-
-        top_pages = [
-            "/",
-            "/services",
-            "/pricing",
-            "/schedule-demo",
-            "/ai-assistant",
-            "/events/webinar",
-            "/proposal/download",
-            "/contract/confirm",
-        ]
-
-        new_row["top_page"] = random.choice(top_pages)
+        new_row["top_page"] = random.choice([
+            "/", "/services", "/pricing", "/schedule-demo",
+            "/ai-assistant", "/events/webinar", "/proposal/download", "/contract/confirm",
+        ])
 
         new_records.append(new_row)
 
     return new_records
 
 
-# ============================================================
-# IIS LOG GENERATION
-# ============================================================
 def status_code_for_event(event_type):
     if event_type in HIGH_INTENT_EVENTS:
-        return random.choices(
-            [200, 302, 404, 500],
-            weights=[88, 7, 4, 1],
-            k=1,
-        )[0]
-
-    return random.choices(
-        [200, 304, 404, 500],
-        weights=[86, 8, 5, 1],
-        k=1,
-    )[0]
+        return random.choices([200, 302, 404, 500], weights=[88, 7, 4, 1], k=1)[0]
+    return random.choices([200, 304, 404, 500], weights=[86, 8, 5, 1], k=1)[0]
 
 
 def response_time_for_status(status_code):
     if status_code >= 500:
         return random.randint(900, 3500)
-
     if status_code == 404:
         return random.randint(300, 1200)
-
     return random.randint(80, 850)
 
 
@@ -390,14 +273,12 @@ def build_iis_log_rows(new_records):
         client_id = safe_value(row, "client_id", f"CL{random.randint(100000, 999999)}")
         stage = safe_value(row, "current_stage", "Inquiry")
         converted = safe_int(row, "converted", 0)
-
         country = safe_value(row, "country", "Unknown")
         city = safe_value(row, "city", "Unknown")
         service_type = safe_value(row, "service_type", "Cyber Security Service")
         service_category = safe_value(row, "service_category", "Cyber Security")
         marketing_channel = safe_value(row, "marketing_channel", "Direct")
         campaign_name = safe_value(row, "campaign_name", "Live Website Visit")
-
         session_id = f"SESSLIVE{random.randint(100000, 999999)}"
         events = choose_live_events(stage, converted)
 
@@ -407,8 +288,7 @@ def build_iis_log_rows(new_records):
             uri = EVENT_TO_URI.get(event_type, "/services")
 
             query = (
-                f"client_id={client_id}"
-                f"&session_id={session_id}"
+                f"client_id={client_id}&session_id={session_id}"
                 f"&service={service_type.replace(' ', '+')}"
                 f"&channel={marketing_channel.replace(' ', '+')}"
             )
@@ -418,9 +298,7 @@ def build_iis_log_rows(new_records):
                 "time": event_time.strftime("%H:%M:%S"),
                 "s_ip": "127.0.0.1",
                 "cs_method": "POST" if event_type in [
-                    "Contact Form Submit",
-                    "Schedule Demo Request",
-                    "Contract Confirmation",
+                    "Contact Form Submit", "Schedule Demo Request", "Contract Confirmation"
                 ] else "GET",
                 "cs_uri_stem": uri,
                 "cs_uri_query": query,
@@ -452,12 +330,7 @@ def engineer_cleaned_iis_logs(raw_log_rows):
 
     for row in raw_log_rows:
         cleaned_row = row.copy()
-
-        event_datetime = pd.to_datetime(
-            f"{row['date']} {row['time']}",
-            errors="coerce",
-        )
-
+        event_datetime = pd.to_datetime(f"{row['date']} {row['time']}", errors="coerce")
         status_code = int(row.get("sc_status", 0))
         event_type = row.get("event_type", "")
 
@@ -476,37 +349,23 @@ def engineer_cleaned_iis_logs(raw_log_rows):
     return cleaned_rows
 
 
+# appends new rows to the CSV, aligning columns if the file already exists
 def append_csv_aligned(file_path, new_df):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     if file_path.exists():
         existing_columns = pd.read_csv(file_path, nrows=0).columns.tolist()
-
         for col in existing_columns:
             if col not in new_df.columns:
                 new_df[col] = None
-
         new_df = new_df[existing_columns]
-
-        new_df.to_csv(
-            file_path,
-            mode="a",
-            header=False,
-            index=False,
-        )
-
+        new_df.to_csv(file_path, mode="a", header=False, index=False)
     else:
-        new_df.to_csv(
-            file_path,
-            mode="w",
-            header=True,
-            index=False,
-        )
+        new_df.to_csv(file_path, mode="w", header=True, index=False)
 
 
 def append_live_iis_logs(new_records):
     raw_log_rows = build_iis_log_rows(new_records)
-
     if not raw_log_rows:
         return 0
 
@@ -519,36 +378,20 @@ def append_live_iis_logs(new_records):
     return len(raw_logs_df)
 
 
-# ============================================================
-# JSON PREPARATION
-# ============================================================
 def prepare_json_data(dataframe):
     latest_df = dataframe.copy()
 
-    date_columns = [
-        "inquiry_date",
-        "close_date",
-        "demo_date",
-        "proposal_date",
-        "first_web_event",
-        "last_web_event",
-    ]
-
-    for col in date_columns:
+    for col in ["inquiry_date", "close_date", "demo_date", "proposal_date",
+                "first_web_event", "last_web_event"]:
         if col in latest_df.columns:
             latest_df[col] = pd.to_datetime(
-                latest_df[col],
-                errors="coerce",
+                latest_df[col], errors="coerce"
             ).dt.strftime("%Y-%m-%d %H:%M:%S")
 
     latest_df = latest_df.replace({np.nan: None})
-
     return latest_df.to_dict(orient="records")
 
 
-# ============================================================
-# ROUTES
-# ============================================================
 @app.route("/")
 def home():
     return jsonify({
@@ -564,7 +407,6 @@ def live_data():
     global current_data
 
     records_to_add = random.randint(1, 3)
-
     new_records = generate_live_crm_records(records_to_add)
     iis_logs_added = append_live_iis_logs(new_records)
 
@@ -579,10 +421,8 @@ def live_data():
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     print(
-        f"[LIVE API POLL] {timestamp} | "
-        f"crm_added={len(new_records)} | "
-        f"iis_logs_added={iis_logs_added} | "
-        f"stored_total={len(current_data)} | "
+        f"[LIVE API POLL] {timestamp} | crm_added={len(new_records)} | "
+        f"iis_logs_added={iis_logs_added} | stored_total={len(current_data)} | "
         f"returned={len(latest_records)}",
         flush=True,
     )
@@ -597,9 +437,6 @@ def live_data():
     })
 
 
-# ============================================================
-# RUN API
-# ============================================================
 if __name__ == "__main__":
     print("CyberNova Flask API starting...", flush=True)
     print("API endpoint: http://127.0.0.1:5001/live-data", flush=True)
